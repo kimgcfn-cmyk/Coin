@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CoinInv — 자동매매 전략</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0a0a0f;
+    --bg2: #12121a;
+    --bg3: #1a1a28;
+    --border: #2a2a3a;
+    --text: #e0e0e8;
+    --text2: #8888a0;
+    --accent: #00e5a0;
+    --accent2: #00c08b;
+    --accent-glow: rgba(0, 229, 160, 0.15);
+    --red: #ff4466;
+    --red-glow: rgba(255, 68, 102, 0.15);
+    --yellow: #ffc844;
+    --blue: #4488ff;
+    --purple: #8855ff;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    overflow-x: hidden;
+  }
+
+  /* ── NAV ── */
+  nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1rem 2rem;
+    background: rgba(10, 10, 15, 0.85);
+    backdrop-filter: blur(20px);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav-logo {
+    font-size: 1.3rem; font-weight: 800;
+    color: var(--accent);
+    letter-spacing: -0.5px;
+  }
+  .nav-logo span { color: var(--text2); font-weight: 400; }
+  .nav-links { display: flex; gap: 2rem; }
+  .nav-links a {
+    color: var(--text2); text-decoration: none; font-size: 0.9rem;
+    font-weight: 500; transition: color 0.2s;
+  }
+  .nav-links a:hover { color: var(--accent); }
+
+  /* ── HERO ── */
+  .hero {
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    text-align: center;
+    padding: 6rem 2rem 4rem;
+    position: relative;
+  }
+  .hero::before {
+    content: '';
+    position: absolute; top: -200px; left: 50%; transform: translateX(-50%);
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .hero-badge {
+    display: inline-block;
+    padding: 0.4rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 100px;
+    font-size: 0.8rem;
+    color: var(--accent);
+    margin-bottom: 1.5rem;
+    background: var(--accent-glow);
+  }
+  .hero h1 {
+    font-size: clamp(2.5rem, 6vw, 4.5rem);
+    font-weight: 900;
+    letter-spacing: -2px;
+    line-height: 1.1;
+    margin-bottom: 1rem;
+  }
+  .hero h1 .highlight { color: var(--accent); }
+  .hero p {
+    font-size: 1.15rem;
+    color: var(--text2);
+    max-width: 560px;
+    margin-bottom: 2.5rem;
+  }
+  .hero-stats {
+    display: flex; gap: 3rem; margin-top: 1rem;
+  }
+  .hero-stat { text-align: center; }
+  .hero-stat .val {
+    font-size: 2rem; font-weight: 800;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .hero-stat .val.green { color: var(--accent); }
+  .hero-stat .val.yellow { color: var(--yellow); }
+  .hero-stat .label { font-size: 0.8rem; color: var(--text2); margin-top: 0.2rem; }
+
+  /* ── SECTION ── */
+  section { padding: 6rem 2rem; max-width: 1100px; margin: 0 auto; }
+  .section-label {
+    font-size: 0.75rem; font-weight: 700;
+    color: var(--accent); text-transform: uppercase;
+    letter-spacing: 2px; margin-bottom: 0.8rem;
+  }
+  .section-title {
+    font-size: clamp(1.8rem, 4vw, 2.5rem);
+    font-weight: 800; letter-spacing: -1px;
+    margin-bottom: 1rem;
+  }
+  .section-desc {
+    color: var(--text2); font-size: 1.05rem;
+    max-width: 600px; margin-bottom: 3rem;
+  }
+
+  /* ── STRATEGY ── */
+  .strategy-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+  }
+  .strategy-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 2rem;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .strategy-card:hover {
+    border-color: var(--accent);
+    box-shadow: 0 0 30px var(--accent-glow);
+  }
+  .strategy-icon {
+    width: 48px; height: 48px;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.4rem; margin-bottom: 1.2rem;
+  }
+  .strategy-icon.green { background: var(--accent-glow); }
+  .strategy-icon.red { background: var(--red-glow); }
+  .strategy-icon.blue { background: rgba(68, 136, 255, 0.15); }
+  .strategy-card h3 { font-size: 1.15rem; font-weight: 700; margin-bottom: 0.6rem; }
+  .strategy-card p { color: var(--text2); font-size: 0.9rem; line-height: 1.6; }
+  .strategy-card code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    background: var(--bg3);
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+
+  /* ── BACKTEST RESULTS ── */
+  .results-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--bg2);
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .results-table th {
+    background: var(--bg3);
+    padding: 1rem 1.5rem;
+    text-align: left;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .results-table td {
+    padding: 1rem 1.5rem;
+    border-top: 1px solid var(--border);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.9rem;
+  }
+  .results-table tr:hover td { background: rgba(0, 229, 160, 0.03); }
+  .positive { color: var(--accent); font-weight: 600; }
+  .negative { color: var(--red); font-weight: 600; }
+  .coin-name {
+    display: flex; align-items: center; gap: 0.6rem;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+  }
+  .coin-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .coin-dot.btc { background: #f7931a; }
+  .coin-dot.eth { background: #627eea; }
+  .coin-dot.sol { background: #9945ff; }
+
+  /* ── FLOW ── */
+  .flow-steps {
+    display: flex;
+    gap: 0;
+    position: relative;
+    margin-top: 2rem;
+  }
+  .flow-steps::before {
+    content: '';
+    position: absolute;
+    top: 32px; left: 40px; right: 40px;
+    height: 2px;
+    background: var(--border);
+  }
+  .flow-step {
+    flex: 1;
+    text-align: center;
+    position: relative;
+    padding: 0 1rem;
+  }
+  .flow-num {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: var(--bg2);
+    border: 2px solid var(--accent);
+    display: inline-flex;
+    align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    color: var(--accent);
+    font-size: 1rem;
+    margin-bottom: 1rem;
+    position: relative;
+    z-index: 1;
+  }
+  .flow-step h4 { font-size: 0.95rem; font-weight: 700; margin-bottom: 0.4rem; }
+  .flow-step p { font-size: 0.8rem; color: var(--text2); line-height: 1.5; }
+
+  /* ── PARAMETERS ── */
+  .param-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+  }
+  .param-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 2rem;
+    text-align: center;
+  }
+  .param-card h3 {
+    font-size: 1.2rem;
+    margin-bottom: 1.5rem;
+  }
+  .param-card h3 .dot {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    margin-right: 0.5rem;
+    vertical-align: middle;
+  }
+  .param-list { list-style: none; text-align: left; }
+  .param-list li {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+  }
+  .param-list li:last-child { border-bottom: none; }
+  .param-list .key { color: var(--text2); }
+  .param-list .val {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+  }
+
+  /* ── FEATURES ── */
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1.5rem;
+  }
+  .feature-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 1.8rem;
+  }
+  .feature-card .icon { font-size: 1.5rem; margin-bottom: 0.8rem; }
+  .feature-card h4 { font-size: 1rem; font-weight: 700; margin-bottom: 0.4rem; }
+  .feature-card p { font-size: 0.85rem; color: var(--text2); }
+
+  /* ── TERMINAL ── */
+  .terminal {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow: hidden;
+    margin-top: 2rem;
+  }
+  .terminal-header {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.8rem 1.2rem;
+    background: var(--bg3);
+    border-bottom: 1px solid var(--border);
+  }
+  .terminal-dot {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+  }
+  .terminal-dot.r { background: #ff5f57; }
+  .terminal-dot.y { background: #febc2e; }
+  .terminal-dot.g { background: #28c840; }
+  .terminal-title {
+    flex: 1; text-align: center;
+    font-size: 0.8rem; color: var(--text2);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .terminal-body {
+    padding: 1.5rem;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    line-height: 1.8;
+    color: var(--text2);
+  }
+  .terminal-body .cmd { color: var(--accent); }
+  .terminal-body .comment { color: #555570; }
+  .terminal-body .out { color: var(--text); }
+  .terminal-body .pos { color: var(--accent); }
+  .terminal-body .neg { color: var(--red); }
+
+  /* ── FOOTER ── */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 3rem 2rem;
+    text-align: center;
+    color: var(--text2);
+    font-size: 0.85rem;
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+
+  /* ── ANIMATIONS ── */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(30px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .animate {
+    opacity: 0;
+    animation: fadeUp 0.7s ease forwards;
+  }
+  .delay1 { animation-delay: 0.1s; }
+  .delay2 { animation-delay: 0.2s; }
+  .delay3 { animation-delay: 0.3s; }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 768px) {
+    .hero-stats { flex-direction: column; gap: 1.5rem; }
+    .param-grid { grid-template-columns: 1fr; }
+    .flow-steps { flex-direction: column; gap: 2rem; }
+    .flow-steps::before { display: none; }
+    .nav-links { gap: 1rem; }
+    .results-table { font-size: 0.8rem; }
+    .results-table th, .results-table td { padding: 0.7rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ── NAV ── -->
+<nav>
+  <div class="nav-logo">Coin<span>Inv</span></div>
+  <div class="nav-links">
+    <a href="#strategy">전략</a>
+    <a href="#backtest">백테스트</a>
+    <a href="#flow">동작</a>
+    <a href="#params">파라미터</a>
+  </div>
+</nav>
+
+<!-- ── HERO ── -->
+<section class="hero">
+  <div class="hero-badge animate">자동매매 전략 시스템</div>
+  <h1 class="animate delay1">
+    <span class="highlight">떨사오팔</span> 전략
+  </h1>
+  <p class="animate delay2">
+    RSI 과매도 반등을 포착하는 자동매매 전략.<br>
+    하락장에서 매수 타이밍을 포착하고, 추적 손절로 수익을 보호합니다.
+  </p>
+  <div class="hero-stats animate delay3">
+    <div class="hero-stat">
+      <div class="val green">3</div>
+      <div class="label">대상 코인</div>
+    </div>
+    <div class="hero-stat">
+      <div class="val yellow">1h</div>
+      <div class="label">타임프레임</div>
+    </div>
+    <div class="hero-stat">
+      <div class="val green">67%</div>
+      <div class="label">평균 승률</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── STRATEGY ── -->
+<section id="strategy">
+  <div class="section-label">Strategy</div>
+  <div class="section-title">전략 개요</div>
+  <div class="section-desc">
+    떨사오팔은 가격 하락 후 반등 신호를 확인하고 진입하는 전략입니다.
+  </div>
+  <div class="strategy-grid">
+    <div class="strategy-card">
+      <div class="strategy-icon green">📉</div>
+      <h3>RSI 과매도 탐지</h3>
+      <p>
+        최근 N개 캔들 내 RSI가 과매도 구간(<code>RSI ≤ 30~35</code>)에 진입한 이력을 탐지합니다.
+        단순 임계값 돌파가 아닌, 반등 시작 시그널을 확인합니다.
+      </p>
+    </div>
+    <div class="strategy-card">
+      <div class="strategy-icon blue">📊</div>
+      <h3>EMA 크로스 확인</h3>
+      <p>
+        가격이 단기 EMA(<code>EMA 10</code>) 위로 복귀했는지 확인합니다.
+        장기 추세는 <code>EMA 50</code>으로 판단하여 하락장 진입을 필터링합니다.
+      </p>
+    </div>
+    <div class="strategy-card">
+      <div class="strategy-icon green">🎯</div>
+      <h3>다중 출구 전략</h3>
+      <p>
+        목표 수익률 도달 시 익절, RSI 과매수 시 추가 상승 제한 → 익절.
+        진입 후 <code>trailing stop</code>으로 수익을 보호합니다.
+      </p>
+    </div>
+    <div class="strategy-card">
+      <div class="strategy-icon red">🛑</div>
+      <h3>추적 손절</h3>
+      <p>
+        진입 후 최고가 대비 일정 수준(<code>1~2.5%</code>) 하락 시 자동 매도.
+        고정 손절 대비 더 유연한 리스크 관리를 제공합니다.
+      </p>
+    </div>
+    <div class="strategy-card">
+      <div class="strategy-icon blue">⏱️</div>
+      <h3>쿨다운 시스템</h3>
+      <p>
+        손절 후 <code>3캔들</code> 동안 재진입을 보류합니다.
+        연속 손절을 방지하고 시장 안정을 기다립니다.
+      </p>
+    </div>
+    <div class="strategy-card">
+      <div class="strategy-icon green">🔔</div>
+      <h3>텔레그램 알림</h3>
+      <p>
+        매수/매도 신호 발생 시 텔레그램으로 실시간 알림을 발송합니다.
+        밤 시간대엔 거래소 예약주문을 권장합니다.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ── BACKTEST ── -->
+<section id="backtest">
+  <div class="section-label">Backtest Results</div>
+  <div class="section-title">백테스트 결과</div>
+  <div class="section-desc">
+    최근 데이터 기준 1h 타임프레임 백테스트 결과입니다.
+  </div>
+
+  <table class="results-table">
+    <thead>
+      <tr>
+        <th>코인</th>
+        <th>총수익</th>
+        <th>승률</th>
+        <th>거래 횟수</th>
+        <th>주요 출구</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="coin-name"><span class="coin-dot btc"></span>BTC / USDT</span></td>
+        <td class="positive">+0.29%</td>
+        <td class="positive">83%</td>
+        <td>6회</td>
+        <td>trailing · RSI 과매수</td>
+      </tr>
+      <tr>
+        <td><span class="coin-name"><span class="coin-dot eth"></span>ETH / USDT</span></td>
+        <td class="positive">+0.02%</td>
+        <td class="positive">62%</td>
+        <td>8회</td>
+        <td>RSI 과매수 · trailing</td>
+      </tr>
+      <tr>
+        <td><span class="coin-name"><span class="coin-dot sol"></span>SOL / USDT</span></td>
+        <td class="positive">+0.09%</td>
+        <td class="positive">57%</td>
+        <td>8회</td>
+        <td>trailing · RSI 과매수</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="terminal">
+    <div class="terminal-header">
+      <span class="terminal-dot r"></span>
+      <span class="terminal-dot y"></span>
+      <span class="terminal-dot g"></span>
+      <span class="terminal-title">coin_fall_buy_backtest.py</span>
+    </div>
+    <div class="terminal-body">
+      <div><span class="comment"># 백테스트 실행</span></div>
+      <div><span class="cmd">$</span> python3 coin_fall_buy_backtest.py</div>
+      <div>&nbsp;</div>
+      <div><span class="out">  BTC/USDT: 총수익</span> <span class="pos">+0.29%</span> <span class="out">| 승률 83% | 거래 6회</span></div>
+      <div><span class="out">  ETH/USDT: 총수익</span> <span class="pos">+0.02%</span> <span class="out">| 승률 62% | 거래 8회</span></div>
+      <div><span class="out">  SOL/USDT: 총수익</span> <span class="pos">+0.09%</span> <span class="out">| 승률 57% | 거래 8회</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FLOW ── -->
+<section id="flow">
+  <div class="section-label">How It Works</div>
+  <div class="section-title">동작 흐름</div>
+  <div class="section-desc">
+    4시간마다 cron으로 실행되어 코인별 상태를 점검합니다.
+  </div>
+  <div class="flow-steps">
+    <div class="flow-step">
+      <div class="flow-num">1</div>
+      <h4>시세 수집</h4>
+      <p>Binance에서 1h OHLCV 데이터를 조회합니다</p>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">2</div>
+      <h4>지표 계산</h4>
+      <p>RSI(14), EMA(10), EMA(50)를 계산합니다</p>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">3</div>
+      <h4>조건 판단</h4>
+      <p>매수/매도 조건을 순차적으로 검사합니다</p>
+    </div>
+    <div class="flow-step">
+      <div class="flow-num">4</div>
+      <h4>신호 발송</h4>
+      <p>조건 충족 시 텔레그램으로 알림을 보냅니다</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── PARAMETERS ── -->
+<section id="params">
+  <div class="section-label">Parameters</div>
+  <div class="section-title">코인별 파라미터</div>
+  <div class="section-desc">
+    백테스트를 통해 최적화된 파라미터입니다.
+  </div>
+  <div class="param-grid">
+    <div class="param-card">
+      <h3><span class="dot" style="background:#f7931a"></span>BTC / USDT</h3>
+      <ul class="param-list">
+        <li><span class="key">RSI 매수</span> <span class="val">≤ 30</span></li>
+        <li><span class="key">RSI 매도</span> <span class="val">≥ 62</span></li>
+        <li><span class="key">목표 수익</span> <span class="val">+3.5%</span></li>
+        <li><span class="key">손절</span> <span class="val">-4.5%</span></li>
+        <li><span class="key">Trailing</span> <span class="val">-1.0%</span></li>
+        <li><span class="key">Lookback</span> <span class="val">2캔들</span></li>
+      </ul>
+    </div>
+    <div class="param-card">
+      <h3><span class="dot" style="background:#627eea"></span>ETH / USDT</h3>
+      <ul class="param-list">
+        <li><span class="key">RSI 매수</span> <span class="val">≤ 32</span></li>
+        <li><span class="key">RSI 매도</span> <span class="val">≥ 68</span></li>
+        <li><span class="key">목표 수익</span> <span class="val">+4.0%</span></li>
+        <li><span class="key">손절</span> <span class="val">-4.5%</span></li>
+        <li><span class="key">Trailing</span> <span class="val">-1.5%</span></li>
+        <li><span class="key">Lookback</span> <span class="val">3캔들</span></li>
+      </ul>
+    </div>
+    <div class="param-card">
+      <h3><span class="dot" style="background:#9945ff"></span>SOL / USDT</h3>
+      <ul class="param-list">
+        <li><span class="key">RSI 매수</span> <span class="val">≤ 35</span></li>
+        <li><span class="key">RSI 매도</span> <span class="val">≥ 70</span></li>
+        <li><span class="key">목표 수익</span> <span class="val">+4.0%</span></li>
+        <li><span class="key">손절</span> <span class="val">-4.0%</span></li>
+        <li><span class="key">Trailing</span> <span class="val">-2.0%</span></li>
+        <li><span class="key">Lookback</span> <span class="val">3캔들</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURES ── -->
+<section id="features">
+  <div class="section-label">Features</div>
+  <div class="section-title">시스템 특징</div>
+  <div class="feature-grid">
+    <div class="feature-card">
+      <div class="icon">🤖</div>
+      <h4>알림 전용</h4>
+      <p>봇은 자산을 만지지 않습니다. 매수/매도 신호만 발송하며, 실제 주문은 사용자가 직접 실행합니다.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🌙</div>
+      <h4>예약주문 지원</h4>
+      <p>밤 시간대엔 거래소 예약주문(지정가 + OCO)으로 대응할 수 있도록 안내합니다.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">📈</div>
+      <h4>레버리지 계산</h4>
+      <p>2배 레버리지 기준 증거금 수익률을 함께 표시하여 의사결정을 돕습니다.</p>
+    </div>
+    <div class="feature-card">
+      <div class="icon">🔄</div>
+      <h4>크론 호환</h4>
+      <p>1회 실행 모드를 지원하여 cron으로 정기 점검을 자동화할 수 있습니다.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── FOOTER ── -->
+<footer>
+  <p>CoinInv — 자동매매 전략 시스템</p>
+  <p style="margin-top:0.5rem; font-size:0.75rem;">
+    투자 권유가 아닙니다. 모든 거래의 책임은 사용자에게 있습니다.
+  </p>
+</footer>
+
+</body>
+</html>
