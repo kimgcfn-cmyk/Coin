@@ -1,31 +1,34 @@
 """
-Bitget 단기 급등 알림 봇 — 텔레그램 신호 전용 (자동매매 없음)
+Bitget 단기 급등 알림 봇 — 디스코드 신호 전용 (자동매매 없음)
 ================================================================
 [중요] 이 스크립트는 신호 알림만 합니다. 실제 주문은 절대 자동으로 넣지 않습니다.
-       텔레그램으로 "OOO 진입 추천, 손절가 X, 목표가 Y"를 받으면
+       디스코드로 "OOO 진입 추천, 손절가 X, 목표가 Y"를 받으면
        사용자가 직접 거래소에서 수동으로 주문을 넣어야 합니다.
 
-[전략 근거]
+[2026-07-30 변경] 알림 채널: 텔레그램 → 디스코드로 이전
+  이유: coin_range_monitor.py(RSI 범위매매)와 알림 채널을 구분하기 위해
+       이 급등스캐너는 별도 디스코드 웹훅(전용 채널)을 사용한다.
+
+[전략 근거] — 로직은 변경 없음, 알림 채널만 교체
   - 4시간봉 기준 12시간 내 30%+ 상승, 거래량 2배+ 폭증 탐지
   - 진입 시점 직전 5분봉(30분치)으로 가격/거래량 가속도 계산
     → 가속 중이면 롱, 아니면 숏 (사후 정보 없이 진입 시점에 즉시 결정)
   - 손절: 탐지구간 고점/저점 ± 5%, 손익비 1:5
 
 [설정 방법]
-  1. 텔레그램에서 @BotFather 검색 → /newbot → 봇 이름 설정 → 토큰(TOKEN) 발급
-  2. 만든 봇과 대화 시작 (아무 메시지나 전송)
-  3. 브라우저로 https://api.telegram.org/bot<TOKEN>/getUpdates 접속
-     → "chat":{"id": 숫자} 부분에서 CHAT_ID 확인
-  4. 아래 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID 에 입력
+  1. 디스코드에서 급등스캐너 전용 채널 생성
+  2. 채널 설정 → 연동(Integrations) → 웹후크 → 새 웹후크 생성 → URL 복사
+  3. .env에 DISCORD_WEBHOOK_URL_ALERT=복사한URL 추가
+  4. config.py에 DISCORD_WEBHOOK_URL_ALERT = _get("DISCORD_WEBHOOK_URL_ALERT") 추가
 
 실행:
   python telegram_alert_scanner.py              # 반복 스캔 (기본 5분 간격)
   python telegram_alert_scanner.py --once        # 1회만 스캔
-  python telegram_alert_scanner.py --test TACUSDT  # 단일 종목 테스트 (텔레그램 전송 포함)
-  python telegram_alert_scanner.py --notify-test   # 텔레그램 연결 테스트 메시지만 전송
+  python telegram_alert_scanner.py --test TACUSDT  # 단일 종목 테스트 (디스코드 전송 포함)
+  python telegram_alert_scanner.py --notify-test   # 디스코드 연결 테스트 메시지만 전송
 """
 
-import requests, time, sys
+import requests, time, sys, re
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from typing import Optional
@@ -35,27 +38,28 @@ from typing import Optional
 #  수정이 필요하면 이 파일이 아닌 .env 파일을 수정하세요
 # ══════════════════════════════════════════════════════
 try:
-    from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, telegram_configured
+    import config as _cfg
+    DISCORD_WEBHOOK_URL_ALERT = _cfg._get("DISCORD_WEBHOOK_URL_ALERT") if hasattr(_cfg, "_get") else \
+                               getattr(_cfg, "DISCORD_WEBHOOK_URL_ALERT", "")
 except ImportError:
     print("⚠️  config.py 를 찾을 수 없습니다. 같은 폴더에 config.py 와 .env 파일이 있는지 확인하세요.")
-    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID = "", ""
-    telegram_configured = lambda: False
+    DISCORD_WEBHOOK_URL_ALERT = ""
 
 # ══════════════════════════════════════════════════════
-#  전략 설정 (백테스트로 검증된 값 그대로 사용)
+#  전략 설정 (백테스트로 검증된 값 그대로 사용 — 변경 없음)
 # ══════════════════════════════════════════════════════
 H4 = 4 * 3_600_000
 M5 = 5 * 60_000
 H1 = 3_600_000
 
 CFG = {
-    "price_surge_pct"  : 30.0,   # 탐지 기준: 30%↑
+    "price_surge_pct"  : 30.0,
     "volume_mult_min"  : 2.0,
-    "surge_periods"    : 3,      # 3 × 4h = 12h
-    "baseline_periods" : 6,      # 6 × 4h = 24h (거래량 평균 기준)
+    "surge_periods"    : 3,
+    "baseline_periods" : 6,
     "min_vol_usdt"     : 5_000,
 
-    "accel_lookback_candles": 3,   # 5분봉 3개 = 15분씩 두 구간 비교
+    "accel_lookback_candles": 3,
     "accel_price_weight"    : 0.5,
     "accel_vol_weight"      : 0.5,
     "accel_score_threshold" : 1.0,
@@ -64,15 +68,14 @@ CFG = {
     "rr_ratio"      : 5,
     "use_wick_sl"   : True,
 
-    "dedup_minutes"     : 240,   # 같은 종목 4시간 내 재알림 방지
-    "scan_interval_sec" : 300,   # 5분마다 반복 스캔
+    "dedup_minutes"     : 240,
+    "scan_interval_sec" : 300,
     "api_delay"         : 0.08,
 
-    # ── 작동 확인용 알림 ──────────────────────────────
-    "notify_on_bot_start" : True,   # 봇 처음 가동될 때 1회 알림
-    "notify_on_scan_start": True,   # 스캔 시작 알림 (아래 간격 제한 적용)
-    "notify_scan_start_interval_sec": 43200,  # 탐지 여부 관계없이 항상 12시간마다만 알림
-    "notify_on_scan_end"  : False,  # 스캔 종료 알림은 끔
+    "notify_on_bot_start" : True,
+    "notify_on_scan_start": True,
+    "notify_scan_start_interval_sec": 43200,
+    "notify_on_scan_end"  : False,
 }
 
 BASE    = "https://api.bitget.com"
@@ -81,36 +84,41 @@ _seen: dict[str, datetime] = {}
 _last_scan_start_notify: Optional[datetime] = None
 
 # ══════════════════════════════════════════════════════
-#  텔레그램 전송
+#  디스코드 전송 (텔레그램 대체)
 # ══════════════════════════════════════════════════════
+def _html_to_discord_markdown(text: str) -> str:
+    text = re.sub(r"<b>(.*?)</b>", r"**\1**", text, flags=re.DOTALL)
+    text = re.sub(r"<i>(.*?)</i>", r"*\1*", text, flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", "", text)
+    return text
+
 def send_telegram(text: str) -> bool:
-    if not telegram_configured():
-        print("  ⚠️  텔레그램 미설정 — .env 파일의 TELEGRAM_TOKEN, TELEGRAM_CHAT_ID 를 확인하세요.")
-        print(f"\n[텔레그램 전송 예정 내용]\n{text}\n")
+    """이름은 하위호환을 위해 유지하지만 실제로는 디스코드로 전송한다."""
+    if not DISCORD_WEBHOOK_URL_ALERT:
+        print("  ⚠️  디스코드 웹훅 미설정 — .env 파일의 DISCORD_WEBHOOK_URL_ALERT 를 확인하세요.")
+        print(f"\n[디스코드 전송 예정 내용]\n{text}\n")
         return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    content = _html_to_discord_markdown(text)
+    if len(content) > 1900:
+        content = content[:1900] + "\n…(생략)"
     try:
-        r = requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-        }, timeout=10)
-        ok = r.json().get("ok", False)
+        r = requests.post(DISCORD_WEBHOOK_URL_ALERT, json={"content": content}, timeout=10)
+        ok = r.status_code in (200, 204)
         if not ok:
-            print(f"  ❌ 텔레그램 전송 실패: {r.text[:200]}")
+            print(f"  ❌ 디스코드 전송 실패: {r.status_code} {r.text[:200]}")
         return ok
     except Exception as e:
-        print(f"  ❌ 텔레그램 전송 예외: {e}")
+        print(f"  ❌ 디스코드 전송 예외: {e}")
         return False
 
 def test_telegram_connection():
     msg = (
-        "🔔 <b>텔레그램 연동 테스트</b>\n\n"
+        "🔔 <b>디스코드 연동 테스트</b>\n\n"
         "이 메시지가 보이면 봇 연결이 정상입니다.\n"
         f"테스트 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
     ok = send_telegram(msg)
-    print("✅ 전송 성공" if ok else "❌ 전송 실패 — 토큰/채팅ID를 다시 확인하세요")
+    print("✅ 전송 성공" if ok else "❌ 전송 실패 — 웹훅 URL을 다시 확인하세요")
 
 # ══════════════════════════════════════════════════════
 #  데이터 구조
@@ -123,7 +131,7 @@ class Signal:
     vol_mult    : float
     high_period : float
     low_period  : float
-    direction   : str        # "long" | "short"
+    direction   : str
     accel_score : float
     accel_available: bool
     sl_price    : float = 0.0
@@ -176,7 +184,7 @@ def fetch_candles_5m(symbol: str, limit: int = 10) -> list:
         return raw
 
 # ══════════════════════════════════════════════════════
-#  5분봉 선행 가속도 (진입 시점 = "지금", 미래 데이터 없음)
+#  5분봉 선행 가속도
 # ══════════════════════════════════════════════════════
 def compute_lead_accel(symbol: str) -> dict:
     n = CFG["accel_lookback_candles"]
@@ -257,7 +265,6 @@ def analyze_symbol(symbol: str) -> Optional[Signal]:
     if vol_mult < CFG["volume_mult_min"]:
         return None
 
-    # 선행지표 가속도로 즉시 방향 결정
     accel = compute_lead_accel(symbol)
     direction = "long" if (accel["available"] and accel["score"] >= CFG["accel_score_threshold"]) else "short"
 
@@ -284,7 +291,7 @@ def mark_seen(symbol: str):
     _seen[symbol] = datetime.now()
 
 # ══════════════════════════════════════════════════════
-#  메시지 포맷 — 진입 추천 알림
+#  메시지 포맷
 # ══════════════════════════════════════════════════════
 def format_entry_message(s: Signal) -> str:
     risk_pct = abs(s.sl_price - s.price_entry) / s.price_entry * 100
@@ -312,7 +319,6 @@ def format_entry_message(s: Signal) -> str:
 #  스캔 루프
 # ══════════════════════════════════════════════════════
 def should_notify_scan_start() -> bool:
-    """스캔시작 알림을 보낼지 여부 — 마지막 전송 후 지정 간격이 지났을 때만 True"""
     global _last_scan_start_notify
     if not CFG["notify_on_scan_start"]:
         return False
@@ -320,7 +326,6 @@ def should_notify_scan_start() -> bool:
     if _last_scan_start_notify is None:
         return True
     elapsed = (now - _last_scan_start_notify).total_seconds()
-    # 기본 간격: 12시간 (급등 탐지 없을 때)
     return elapsed >= CFG["notify_scan_start_interval_sec"]
 
 def scan_once() -> list[Signal]:
@@ -372,7 +377,7 @@ def scan_once() -> list[Signal]:
 
 def run(once: bool = False):
     print("="*60)
-    print("  Bitget 급등 알림 봇 (텔레그램 전용, 자동매매 없음)")
+    print("  Bitget 급등 알림 봇 (디스코드 전용, 자동매매 없음)")
     print(f"  조건: 12h {CFG['price_surge_pct']}%↑ & 거래량 {CFG['volume_mult_min']}x↑")
     print("="*60)
 

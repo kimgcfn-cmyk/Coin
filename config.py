@@ -5,7 +5,10 @@ config.py — 공통 인증 정보 로더
 각 스크립트는 용도에 맞는 봇을 선택해서 사용합니다.
 
 .env 파일 형식:
-  # 봇1: 코인 스캐너
+  # 디스코드봇: 코인
+  DISCORD_WEBHOOK_URL =채팅ID
+
+  # 봇1: 통합잔고조회
   TELEGRAM_TOKEN_COIN=토큰
   TELEGRAM_CHAT_ID_COIN=채팅ID
 
@@ -13,7 +16,7 @@ config.py — 공통 인증 정보 로더
   TELEGRAM_TOKEN_US=토큰
   TELEGRAM_CHAT_ID_US=채팅ID
 
-  # 봇3: 한국주식 / 통합전략
+  # 봇3: 한국주식
   TELEGRAM_TOKEN_KR=토큰
   TELEGRAM_CHAT_ID_KR=채팅ID
 
@@ -74,10 +77,16 @@ def _get(key: str, default: str = "") -> str:
     return os.environ.get(key) or _ENV.get(key, default)
 
 # ══════════════════════════════════════════════════════
-#  텔레그램 봇 3개 — 용도별로 분리
+#  텔레그램 봇 3개 + 디스코드 봇 2개 — 용도별로 분리
 # ══════════════════════════════════════════════════════
 
-# 봇1: 코인 스캐너 전용
+# 디스코드봇: 코인박스스캔
+DISCORD_WEBHOOK_URL = _get("DISCORD_WEBHOOK_URL")
+
+# 디스코드봇: 코인급등스캔
+DISCORD_WEBHOOK_URL_ALERT = _get("DISCORD_WEBHOOK_URL_ALERT")
+
+# 봇1: 통합잔고조회 전용
 TELEGRAM_TOKEN_COIN   = _get("TELEGRAM_TOKEN_COIN")
 TELEGRAM_CHAT_ID_COIN = _get("TELEGRAM_CHAT_ID_COIN")
 
@@ -85,7 +94,7 @@ TELEGRAM_CHAT_ID_COIN = _get("TELEGRAM_CHAT_ID_COIN")
 TELEGRAM_TOKEN_US     = _get("TELEGRAM_TOKEN_US")
 TELEGRAM_CHAT_ID_US   = _get("TELEGRAM_CHAT_ID_US")
 
-# 봇3: 한국주식 / 통합전략 전용
+# 봇3: 한국주식 스캐저 전용
 TELEGRAM_TOKEN_KR     = _get("TELEGRAM_TOKEN_KR")
 TELEGRAM_CHAT_ID_KR   = _get("TELEGRAM_CHAT_ID_KR")
 
@@ -128,11 +137,21 @@ def get_telegram_bot(bot: str = "coin") -> tuple[str, str]:
     return "", ""
 
 # ══════════════════════════════════════════════════════
+#  엔스로픽 Claude Open API
+# ══════════════════════════════════════════════════════
+ANTHROPIC_API_KEY = _get("ANTHROPIC_API_KEY")
+
+# ══════════════════════════════════════════════════════
 #  한국투자증권 Open API
 # ══════════════════════════════════════════════════════
 KIS_APP_KEY    = _get("KIS_APP_KEY")
 KIS_APP_SECRET = _get("KIS_APP_SECRET")
 KIS_IS_VIRTUAL = _get("KIS_IS_VIRTUAL", "true").lower() == "true"
+
+# ══════════════════════════════════════════════════════
+# 한국투자증권 실 계좌번호
+# ══════════════════════════════════════════════════════
+KIS_ACCOUNT_NO = _get("KIS_ACCOUNT_NO")
 
 def kis_configured() -> bool:
     return bool(KIS_APP_KEY and KIS_APP_SECRET
