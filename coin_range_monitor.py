@@ -81,7 +81,7 @@ COINS = {
 }
 
 CFG = {
-    "timeframe"    : "4h",       # 4시간봉 (백테스트와 동일)
+    "timeframe"    : "15m",      # 2026-08-30: 4h→15m, 매매 빈도 증대 목적 (백테스트 값 아님, 주의)
     "rsi_period"   : 14,
     "ma_period"    : 50,         # 하락장 필터용
     "down_guard"   : 8.0,        # MA -8% 이탈 시 매수 보류
