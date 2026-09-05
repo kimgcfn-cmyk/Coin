@@ -63,6 +63,21 @@ except ImportError:
 
 import requests
 
+try:
+    import trade_ledger
+    HAS_LEDGER = True
+except ImportError:
+    HAS_LEDGER = False
+
+def _record(side: str, time_str: str, price: float, note: str = ""):
+    """체결 기록 실패가 실거래 로직에 영향 주지 않도록 별도 방어."""
+    if not HAS_LEDGER:
+        return
+    try:
+        trade_ledger.append_trade("BTC", side, time_str, price, note)
+    except Exception as e:
+        print(f"  ⚠️ 거래 기록(엑셀) 실패: {e}")
+
 # ══════════════════════════════════════════════════════
 #  설정 — 백테스트 검증 최적 파라미터
 # ══════════════════════════════════════════════════════
@@ -359,6 +374,7 @@ def run_check(send: bool = True):
                     }
                     msg += f"\n\n🤖 <b>자동매수 실행됨</b>: {detail}"
                     print(f"  🟢 {label}: 매수 체결 (RSI {r['rsi']:.1f}, ${r['price']:,.2f}) {detail}")
+                    _record("buy", now, r["price"])
                 else:
                     msg += f"\n\n🤖 ❌ 자동매수 실패: {detail}\n→ 신호는 유효하나 주문은 안 됨. 다음 점검에서 재시도됩니다"
                     print(f"  ❌ {label}: 매수 실패 — {detail}")
@@ -384,6 +400,7 @@ def run_check(send: bool = True):
                     msg += f"\n\n🤖 <b>자동매도 실행됨</b>: {detail}"
                     holdings.pop(symbol, None)   # 청산 성공 시에만 기록 삭제
                     print(f"  {'🎯' if reason=='target' else '🔴'} {label}: 매도 체결 ({r['change']:+.1f}%) {detail}")
+                    _record("sell", now, r["price"], note=("익절" if reason=="target" else "손절"))
                 else:
                     msg += f"\n\n🤖 ❌ 자동매도 실패: {detail}\n→ 즉시 확인 필요! 다음 점검에서 재시도됩니다"
                     print(f"  ❌ {label}: 매도 실패 — {detail} (보유기록 유지, 재시도 예정)")

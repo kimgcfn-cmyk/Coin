@@ -61,6 +61,21 @@ except ImportError:
 
 import requests
 
+try:
+    import trade_ledger
+    HAS_LEDGER = True
+except ImportError:
+    HAS_LEDGER = False
+
+def _record(side: str, time_str: str, price: float, note: str = ""):
+    """체결 기록 실패가 실거래 로직에 영향 주지 않도록 별도 방어."""
+    if not HAS_LEDGER:
+        return
+    try:
+        trade_ledger.append_trade("TQQQ", side, time_str, price, note)
+    except Exception as e:
+        print(f"  ⚠️ 거래 기록(엑셀) 실패: {e}")
+
 # ══════════════════════════════════════════════════════
 #  설정 — "떨사오팔" 그리드 파라미터
 # ══════════════════════════════════════════════════════
@@ -287,6 +302,7 @@ def run_check(send: bool = True):
                    f"누적 증거금: {state['holdings_usdt']:.0f} / {CFG['max_total_usdt']:.0f} USDT\n"
                    f"{detail}")
             print(f"  🟢 매수 체결: {detail}")
+            _record("buy", now, price)
         else:
             msg = f"❌ <b>{CFG['symbol']} 매수 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
             print(f"  ❌ 매수 실패: {detail}")
@@ -306,6 +322,7 @@ def run_check(send: bool = True):
                    f"잔여 증거금: {state['holdings_usdt']:.0f} USDT\n"
                    f"{detail}")
             print(f"  🔴 매도 체결: {detail}")
+            _record("sell", now, price)
         else:
             msg = f"❌ <b>{CFG['symbol']} 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
             print(f"  ❌ 매도 실패: {detail}")
