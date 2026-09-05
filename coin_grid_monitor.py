@@ -191,7 +191,8 @@ def fetch_price(symbol: str) -> float:
         print(f"  시세 조회 오류: {e}")
         return 0.0
 
-def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce_only: bool = False) -> tuple:
+def place_order(symbol: str, side: str, margin_usdt: float, price: float,
+                 reduce_only: bool = False, dry_run: bool = False) -> tuple:
     """
     실제 시장가 주문. margin_usdt는 투입 증거금이고, 실제 체결 수량은
     레버리지가 곱해진 명목가치(notional) 기준으로 계산된다.
@@ -204,11 +205,18 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce
      방식으로 자동 세팅해줌)
     계좌가 hedge_mode이므로 hedged=True 고정.
 
+    ⚠️ 2026-09-05: dry_run 인자 추가 — 이전엔 auto_trade만 보고 --check에서도
+    실주문이 나가는 사고가 있었다(run_check(send=False)여도 이 함수는
+    send를 몰랐음). 이제 dry_run=True(=--check)면 auto_trade와 무관하게
+    무조건 주문을 막는다.
+
     반환: (성공여부, 메시지, 체결수량)
     """
     lev = CFG["leverage"]
     notional = margin_usdt * lev
     qty = notional / price if price > 0 else 0
+    if dry_run:
+        return True, f"--check 모드 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty
     if not CFG["auto_trade"]:
         return True, f"auto_trade 꺼짐 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty
     ex = get_exchange()
@@ -289,7 +297,8 @@ def run_check(send: bool = True):
         print(f"  ✅ 기준가 {price:,.4f} 설정 완료")
 
     elif action == "buy":
-        ok, detail, qty = place_order(CFG["symbol"], "buy", CFG["order_usdt"], price, reduce_only=False)
+        ok, detail, qty = place_order(CFG["symbol"], "buy", CFG["order_usdt"], price,
+                                       reduce_only=False, dry_run=not send)
         if ok:
             state["qty"] = state.get("qty", 0.0) + qty
             state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["order_usdt"]
@@ -302,14 +311,16 @@ def run_check(send: bool = True):
                    f"누적 증거금: {state['holdings_usdt']:.0f} / {CFG['max_total_usdt']:.0f} USDT\n"
                    f"{detail}")
             print(f"  🟢 매수 체결: {detail}")
-            _record("buy", now, price)
+            if send:
+                _record("buy", now, price)
         else:
             msg = f"❌ <b>{CFG['symbol']} 매수 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
             print(f"  ❌ 매수 실패: {detail}")
 
     elif action == "sell":
         qty_to_sell = (CFG["order_usdt"] * CFG["leverage"]) / price
-        ok, detail, qty = place_order(CFG["symbol"], "sell", CFG["order_usdt"], price, reduce_only=True)
+        ok, detail, qty = place_order(CFG["symbol"], "sell", CFG["order_usdt"], price,
+                                       reduce_only=True, dry_run=not send)
         if ok:
             state["qty"] = max(0.0, state.get("qty", 0.0) - qty_to_sell)
             state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG["order_usdt"])
@@ -322,7 +333,8 @@ def run_check(send: bool = True):
                    f"잔여 증거금: {state['holdings_usdt']:.0f} USDT\n"
                    f"{detail}")
             print(f"  🔴 매도 체결: {detail}")
-            _record("sell", now, price)
+            if send:
+                _record("sell", now, price)
         else:
             msg = f"❌ <b>{CFG['symbol']} 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
             print(f"  ❌ 매도 실패: {detail}")
