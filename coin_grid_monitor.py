@@ -81,7 +81,7 @@ def _record(side: str, time_str: str, price: float, note: str = ""):
 # ══════════════════════════════════════════════════════
 CFG = {
     "symbol"          : "TQQQ/USDT:USDT",  # ⚠️ --find-symbol 로 정확한 형식 먼저 확인할 것
-    "step_pct"        : 5.0,               # 그리드 간격 5%
+    "step_pct"        : 3.0,               # 그리드 간격 3% (2026-09-05: 5%→3%, 매매 빈도 증대)
     "order_usdt"      : 10.0,              # 1회 매수/매도 금액
     "max_total_usdt"  : 200.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (안전장치)
     "leverage"        : 1,                 # 1배(레버리지 없음) — TQQQ 자체가 이미 +3배 상품이라
