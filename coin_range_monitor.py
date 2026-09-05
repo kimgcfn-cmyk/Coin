@@ -84,8 +84,8 @@ def _record(side: str, time_str: str, price: float, note: str = ""):
 COINS = {
     "BTC/USDT": {
         "rsi_buy"      : 40,      # RSI 40 이하 매수 (2026-09-05: 30→40, 매매 빈도 증대. 백테스트 값 아님)
-        "target_pct"   : 3.0,     # +3% 익절 (2026-09-05: 4%→3%, 매매 빈도 증대)
-        "stop_pct"     : 3.0,     # -3% 손절 (2026-09-05: 4%→3%, 매매 빈도 증대)
+        "target_pct"   : 5.0,     # +5% 익절 (2026-09-05: 3%→5%, 백테스트로 PF 개선 확인 후 변경)
+        "stop_pct"     : 3.0,     # -3% 손절 (유지)
         "label"        : "BTC",
         # ⚠️ 시세(RSI)는 Binance에서 조회(콜론 없는 표기)하지만,
         # 실제 주문은 Bitget 선물(USDT-M Perpetual)에 넣어야 하므로
