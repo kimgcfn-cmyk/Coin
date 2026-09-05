@@ -83,7 +83,7 @@ def _record(side: str, time_str: str, price: float, note: str = ""):
 # ══════════════════════════════════════════════════════
 COINS = {
     "BTC/USDT": {
-        "rsi_buy"      : 30,      # RSI 30 이하 매수
+        "rsi_buy"      : 40,      # RSI 40 이하 매수 (2026-09-05: 30→40, 매매 빈도 증대. 백테스트 값 아님)
         "target_pct"   : 4.0,     # +4% 익절
         "stop_pct"     : 4.0,     # -4% 손절
         "label"        : "BTC",
