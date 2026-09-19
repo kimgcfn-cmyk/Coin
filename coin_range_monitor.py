@@ -172,27 +172,51 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce
      확인해 검증된 방식 — holdSide 직접 지정은 무시되고, hedged=True를
      주면 ccxt가 side/reduceOnly를 보고 posSide를 자동 계산해줌)
 
-    반환: (성공여부, 메시지, 체결수량)
+    반환: (성공여부, 메시지, 체결수량, 체결정보dict)
+      체결정보dict: {"cost": 실제체결금액USDT, "avg_price": 체결평균가,
+                    "filled_qty": 체결수량, "estimated": bool(추정치여부)}
     """
     lev = CFG["leverage"]
     notional = margin_usdt * lev
     qty = notional / price if price > 0 else 0
     if not CFG["auto_trade"]:
-        return True, f"auto_trade 꺼짐 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty
+        info = {"cost": notional, "avg_price": price, "filled_qty": qty, "estimated": True}
+        return True, f"auto_trade 꺼짐 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty, info
     ex = get_exchange()
     if not ex:
-        return False, "거래소 연결 실패", 0
+        return False, "거래소 연결 실패", 0, {}
     if qty <= 0:
-        return False, "수량 계산 오류(가격 0)", 0
+        return False, "수량 계산 오류(가격 0)", 0, {}
     ensure_leverage(ex, symbol)
     try:
         order_params = {"hedged": True, "reduceOnly": reduce_only}
         # Bitget 선물 시장가 매수는 총비용(amount*price) 계산을 위해
         # price 인자가 필요함 (ccxt 오류 메시지로 확인된 사양)
         order = ex.create_market_order(symbol, side, qty, price, params=order_params)
-        return True, f"체결 완료 (주문ID {order.get('id','?')}, {lev}배 노출 {notional:.0f}USDT)", qty
+
+        # 실제 체결 정보 추출 시도 (시장가 주문 직후엔 비어있을 수 있어 추정치로 폴백)
+        actual_cost = order.get("cost")
+        actual_avg = order.get("average") or order.get("price")
+        actual_filled = order.get("filled") or order.get("amount")
+        estimated = False
+        if actual_avg is None:
+            actual_avg = price
+            estimated = True
+        if actual_filled is None:
+            actual_filled = qty
+            estimated = True
+        if actual_cost is None:
+            actual_cost = actual_filled * actual_avg
+            estimated = True
+
+        info = {"cost": actual_cost, "avg_price": actual_avg,
+                "filled_qty": actual_filled, "estimated": estimated}
+        est_note = " (체결정보 미수신, 요청값 기준 추정)" if estimated else ""
+        return True, (f"체결 완료 (주문ID {order.get('id','?')}, "
+                      f"금액 {actual_cost:,.2f}USDT, 체결가 {actual_avg:,.2f}, "
+                      f"수량 {actual_filled:.6f}{est_note})"), qty, info
     except Exception as e:
-        return False, f"주문 실패: {e}", 0
+        return False, f"주문 실패: {e}", 0, {}
 
 # ══════════════════════════════════════════════════════
 #  보유 상태 저장/로드 (봇이 자동 추적)
@@ -365,14 +389,19 @@ def run_check(send: bool = True):
             #    (실패 시 기록하면 유령 포지션이 되어 계속 잘못 감시하게 됨)
             msg = msg_buy(r, symbol)
             if CFG["auto_trade"] and send:
-                ok, detail, qty = place_order(params.get("exec_symbol", symbol), "buy", CFG["order_usdt"], r["price"], reduce_only=False)
+                ok, detail, qty, info = place_order(params.get("exec_symbol", symbol), "buy", CFG["order_usdt"], r["price"], reduce_only=False)
                 if ok:
                     holdings[symbol] = {
-                        "entry_price": r["price"], "entry_time": now,
+                        "entry_price": info.get("avg_price", r["price"]), "entry_time": now,
                         "target_pct": params["target_pct"], "stop_pct": params["stop_pct"],
-                        "qty": qty, "auto_traded": True,
+                        "qty": info.get("filled_qty", qty), "auto_traded": True,
                     }
-                    msg += f"\n\n🤖 <b>자동매수 실행됨</b>: {detail}"
+                    est_note = " (추정치)" if info.get("estimated") else ""
+                    msg += (f"\n\n🤖 <b>자동매수 실행됨</b>\n"
+                            f"💰 매수 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
+                            f"💵 체결가: {info.get('avg_price', 0):,.2f}\n"
+                            f"📦 수량: {info.get('filled_qty', 0):.6f}\n"
+                            f"{detail}")
                     print(f"  🟢 {label}: 매수 체결 (RSI {r['rsi']:.1f}, ${r['price']:,.2f}) {detail}")
                     _record("buy", now, r["price"])
                 else:
@@ -395,9 +424,19 @@ def run_check(send: bool = True):
 
             if CFG["auto_trade"] and send and qty_held:
                 # 보유수량을 실제 알고 있을 때만(=봇이 직접 산 것만) 자동매도
-                ok, detail, _ = place_order(params.get("exec_symbol", symbol), "sell", CFG["order_usdt"], r["price"], reduce_only=True)
+                ok, detail, _, info = place_order(params.get("exec_symbol", symbol), "sell", CFG["order_usdt"], r["price"], reduce_only=True)
                 if ok:
-                    msg += f"\n\n🤖 <b>자동매도 실행됨</b>: {detail}"
+                    # 실현 손익 추정 (증거금×레버리지×가격변동률, 수수료 제외)
+                    profit_usdt = CFG["order_usdt"] * CFG["leverage"] * (r["change"] / 100)
+                    est_note = " (추정치)" if info.get("estimated") else ""
+                    msg += (f"\n\n🤖 <b>자동매도 실행됨</b>\n"
+                            f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
+                            f"💵 체결가: {info.get('avg_price', 0):,.2f}\n"
+                            f"📦 수량: {info.get('filled_qty', 0):.6f}\n"
+                            f"📊 이번 거래 수익률: {r['change']:+.2f}% "
+                            f"(레버리지 반영 {r['change']*CFG['leverage']:+.2f}%)\n"
+                            f"💸 실현 손익(추정, 수수료 제외): {profit_usdt:+,.2f} USDT\n"
+                            f"{detail}")
                     holdings.pop(symbol, None)   # 청산 성공 시에만 기록 삭제
                     print(f"  {'🎯' if reason=='target' else '🔴'} {label}: 매도 체결 ({r['change']:+.1f}%) {detail}")
                     _record("sell", now, r["price"], note=("익절" if reason=="target" else "손절"))

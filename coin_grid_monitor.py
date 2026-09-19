@@ -210,27 +210,51 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
     send를 몰랐음). 이제 dry_run=True(=--check)면 auto_trade와 무관하게
     무조건 주문을 막는다.
 
-    반환: (성공여부, 메시지, 체결수량)
+    반환: (성공여부, 메시지, 체결수량, 체결정보dict)
+      체결정보dict: {"cost": 실제체결금액USDT, "avg_price": 체결평균가,
+                    "filled_qty": 체결수량, "estimated": bool(추정치여부)}
     """
     lev = CFG["leverage"]
     notional = margin_usdt * lev
     qty = notional / price if price > 0 else 0
     if dry_run:
-        return True, f"--check 모드 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty
+        info = {"cost": notional, "avg_price": price, "filled_qty": qty, "estimated": True}
+        return True, f"--check 모드 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty, info
     if not CFG["auto_trade"]:
-        return True, f"auto_trade 꺼짐 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty
+        info = {"cost": notional, "avg_price": price, "filled_qty": qty, "estimated": True}
+        return True, f"auto_trade 꺼짐 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty, info
     ex = get_exchange()
     if not ex:
-        return False, "거래소 연결 실패", 0
+        return False, "거래소 연결 실패", 0, {}
     if qty <= 0:
-        return False, "수량 계산 오류(가격 0)", 0
+        return False, "수량 계산 오류(가격 0)", 0, {}
     ensure_leverage(ex, symbol)
     try:
         order_params = {"hedged": True, "reduceOnly": reduce_only}
         order = ex.create_market_order(symbol, side, qty, params=order_params)
-        return True, f"체결 완료 (주문ID {order.get('id','?')}, {lev}배 노출 {notional:.0f}USDT)", qty
+
+        actual_cost = order.get("cost")
+        actual_avg = order.get("average") or order.get("price")
+        actual_filled = order.get("filled") or order.get("amount")
+        estimated = False
+        if actual_avg is None:
+            actual_avg = price
+            estimated = True
+        if actual_filled is None:
+            actual_filled = qty
+            estimated = True
+        if actual_cost is None:
+            actual_cost = actual_filled * actual_avg
+            estimated = True
+
+        info = {"cost": actual_cost, "avg_price": actual_avg,
+                "filled_qty": actual_filled, "estimated": estimated}
+        est_note = " (체결정보 미수신, 요청값 기준 추정)" if estimated else ""
+        return True, (f"체결 완료 (주문ID {order.get('id','?')}, "
+                      f"금액 {actual_cost:,.2f}USDT, 체결가 {actual_avg:,.2f}, "
+                      f"수량 {actual_filled:.6f}{est_note})"), qty, info
     except Exception as e:
-        return False, f"주문 실패: {e}", 0
+        return False, f"주문 실패: {e}", 0, {}
 
 # ══════════════════════════════════════════════════════
 #  그리드 로직
@@ -297,17 +321,19 @@ def run_check(send: bool = True):
         print(f"  ✅ 기준가 {price:,.4f} 설정 완료")
 
     elif action == "buy":
-        ok, detail, qty = place_order(CFG["symbol"], "buy", CFG["order_usdt"], price,
-                                       reduce_only=False, dry_run=not send)
+        ok, detail, qty, info = place_order(CFG["symbol"], "buy", CFG["order_usdt"], price,
+                                             reduce_only=False, dry_run=not send)
         if ok:
-            state["qty"] = state.get("qty", 0.0) + qty
+            actual_qty = info.get("filled_qty", qty)
+            state["qty"] = state.get("qty", 0.0) + actual_qty
             state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["order_usdt"]
             state["reference_price"] = price   # 래칫: 기준가를 더 아래로
-            notional = CFG["order_usdt"] * CFG["leverage"]
+            est_note = " (추정치)" if info.get("estimated") else ""
             msg = (f"🟢 <b>{CFG['symbol']} 매수</b> ({CFG['step_pct']:.0f}% 하락)\n"
-                   f"체결가: {price:,.4f} USDT\n"
-                   f"증거금: {CFG['order_usdt']:.0f} USDT × {CFG['leverage']}배 "
-                   f"= 노출 {notional:.0f} USDT ({qty:.4f}개)\n"
+                   f"💰 매수 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
+                   f"💵 체결가: {info.get('avg_price', price):,.4f} USDT\n"
+                   f"📦 수량: {info.get('filled_qty', qty):.6f}개\n"
+                   f"증거금: {CFG['order_usdt']:.0f} USDT × {CFG['leverage']}배 레버리지\n"
                    f"누적 증거금: {state['holdings_usdt']:.0f} / {CFG['max_total_usdt']:.0f} USDT\n"
                    f"{detail}")
             print(f"  🟢 매수 체결: {detail}")
@@ -319,17 +345,24 @@ def run_check(send: bool = True):
 
     elif action == "sell":
         qty_to_sell = (CFG["order_usdt"] * CFG["leverage"]) / price
-        ok, detail, qty = place_order(CFG["symbol"], "sell", CFG["order_usdt"], price,
-                                       reduce_only=True, dry_run=not send)
+        ok, detail, qty, info = place_order(CFG["symbol"], "sell", CFG["order_usdt"], price,
+                                             reduce_only=True, dry_run=not send)
         if ok:
-            state["qty"] = max(0.0, state.get("qty", 0.0) - qty_to_sell)
+            actual_qty = info.get("filled_qty", qty_to_sell)
+            state["qty"] = max(0.0, state.get("qty", 0.0) - actual_qty)
             state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG["order_usdt"])
             state["reference_price"] = price   # 래칫: 기준가를 더 위로
-            notional = CFG["order_usdt"] * CFG["leverage"]
+            # 그리드 설계상 이번 매도는 직전 기준가 대비 정확히 +step_pct% 지점에서
+            # 체결됨(check_grid의 트리거 조건) → 이번 구간 손익을 정확히 계산 가능
+            leg_profit = CFG["order_usdt"] * CFG["leverage"] * (CFG["step_pct"] / 100)
+            est_note = " (추정치)" if info.get("estimated") else ""
             msg = (f"🔴 <b>{CFG['symbol']} 매도</b> ({CFG['step_pct']:.0f}% 상승)\n"
-                   f"체결가: {price:,.4f} USDT\n"
-                   f"증거금: {CFG['order_usdt']:.0f} USDT × {CFG['leverage']}배 "
-                   f"= 노출 {notional:.0f} USDT ({qty_to_sell:.4f}개)\n"
+                   f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
+                   f"💵 체결가: {info.get('avg_price', price):,.4f} USDT\n"
+                   f"📦 수량: {info.get('filled_qty', qty_to_sell):.6f}개\n"
+                   f"📊 이번 구간 수익률: +{CFG['step_pct']:.0f}% "
+                   f"(레버리지 반영 +{CFG['step_pct']*CFG['leverage']:.0f}%)\n"
+                   f"💸 이번 구간 실현손익(추정, 수수료 제외): +{leg_profit:,.2f} USDT\n"
                    f"잔여 증거금: {state['holdings_usdt']:.0f} USDT\n"
                    f"{detail}")
             print(f"  🔴 매도 체결: {detail}")
