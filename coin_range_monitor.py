@@ -101,7 +101,7 @@ CFG = {
     "ma_period"    : 50,         # 하락장 필터용
     "down_guard"   : 8.0,        # MA -8% 이탈 시 매수 보류
     "leverage"     : 3,          # 거래소에 실제 설정할 레버리지
-    "order_usdt"   : 30.0,       # ⚠️ 1회 매매 증거금(USDT) — ×3배 레버리지 = 노출 90USDT (2026-09-05: 10→30, 시드 900 대비 리스크 확대)
+    "order_usdt"   : 10.0,       # ⚠️ 1회 매매 증거금(USDT) — ×3배 레버리지 = 노출 30USDT (2026-09-19: 30→10, 리스크 축소)
     "auto_trade"   : True,       # ✅ 실전 자동매매 활성화 (2026-08-24 사용자 확정)
     "state_file"   : "coin_range_holdings.json",
 }
