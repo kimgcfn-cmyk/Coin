@@ -162,7 +162,7 @@ def ensure_leverage(ex, symbol: str):
         print(f"  ⚠️ 레버리지 설정 실패(이미 설정돼 있거나 확인 필요): {e}")
     _leverage_set.add(symbol)
 
-def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce_only: bool = False) -> tuple:
+def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce_only: bool = False, qty_override: float = None) -> tuple:
     """
     실제 시장가 주문. margin_usdt는 투입 증거금, 체결 수량은
     레버리지가 곱해진 명목가치(notional) 기준으로 계산된다.
@@ -179,6 +179,9 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce
     lev = CFG["leverage"]
     notional = margin_usdt * lev
     qty = notional / price if price > 0 else 0
+    if qty_override:   # 청산 시 설정값이 아니라 실제 보유수량 기준으로 주문
+        qty = qty_override
+        notional = qty * price
     if not CFG["auto_trade"]:
         info = {"cost": notional, "avg_price": price, "filled_qty": qty, "estimated": True}
         return True, f"auto_trade 꺼짐 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty, info
@@ -424,10 +427,10 @@ def run_check(send: bool = True):
 
             if CFG["auto_trade"] and send and qty_held:
                 # 보유수량을 실제 알고 있을 때만(=봇이 직접 산 것만) 자동매도
-                ok, detail, _, info = place_order(params.get("exec_symbol", symbol), "sell", CFG["order_usdt"], r["price"], reduce_only=True)
+                ok, detail, _, info = place_order(params.get("exec_symbol", symbol), "sell", CFG["order_usdt"], r["price"], reduce_only=True, qty_override=qty_held)
                 if ok:
-                    # 실현 손익 추정 (증거금×레버리지×가격변동률, 수수료 제외)
-                    profit_usdt = CFG["order_usdt"] * CFG["leverage"] * (r["change"] / 100)
+                    # 실현 손익 추정 (보유수량×가격차, 수수료 제외)
+                    profit_usdt = qty_held * (r["price"] - r["entry"])
                     est_note = " (추정치)" if info.get("estimated") else ""
                     msg += (f"\n\n🤖 <b>자동매도 실행됨</b>\n"
                             f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
