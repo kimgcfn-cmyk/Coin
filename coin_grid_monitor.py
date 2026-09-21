@@ -349,20 +349,22 @@ def run_check(send: bool = True):
                                              reduce_only=True, dry_run=not send)
         if ok:
             actual_qty = info.get("filled_qty", qty_to_sell)
+            ref_before = state.get("reference_price") or price   # 이번 매도의 기준(직전 기준가)
             state["qty"] = max(0.0, state.get("qty", 0.0) - actual_qty)
             state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG["order_usdt"])
             state["reference_price"] = price   # 래칫: 기준가를 더 위로
-            # 그리드 설계상 이번 매도는 직전 기준가 대비 정확히 +step_pct% 지점에서
-            # 체결됨(check_grid의 트리거 조건) → 이번 구간 손익을 정확히 계산 가능
-            leg_profit = CFG["order_usdt"] * CFG["leverage"] * (CFG["step_pct"] / 100)
+            # 실제 체결가와 직전 기준가로 이번 구간 수익률/손익 계산 (BTC 봇과 동일 방식)
+            fill_price = info.get("avg_price", price)
+            leg_ret = (fill_price - ref_before) / ref_before * 100
+            leg_profit = actual_qty * (fill_price - ref_before)
             est_note = " (추정치)" if info.get("estimated") else ""
             msg = (f"🔴 <b>{CFG['symbol']} 매도</b> ({CFG['step_pct']:.0f}% 상승)\n"
                    f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
                    f"💵 체결가: {info.get('avg_price', price):,.4f} USDT\n"
                    f"📦 수량: {info.get('filled_qty', qty_to_sell):.6f}개\n"
-                   f"📊 이번 구간 수익률: +{CFG['step_pct']:.0f}% "
-                   f"(레버리지 반영 +{CFG['step_pct']*CFG['leverage']:.0f}%)\n"
-                   f"💸 이번 구간 실현손익(추정, 수수료 제외): +{leg_profit:,.2f} USDT\n"
+                   f"📊 이번 거래 수익률: {leg_ret:+.2f}% "
+                   f"(레버리지 반영 {leg_ret*CFG['leverage']:+.2f}%)\n"
+                   f"💸 실현 손익(추정, 수수료 제외): {leg_profit:+,.2f} USDT\n"
                    f"잔여 증거금: {state['holdings_usdt']:.0f} USDT\n"
                    f"{detail}")
             print(f"  🔴 매도 체결: {detail}")
