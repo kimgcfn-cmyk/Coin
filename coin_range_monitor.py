@@ -23,8 +23,9 @@
 
 [동작]
   실행(cron) 시:
-    1) 미보유: RSI 체크 → 과매도(≤30)면 실제 매수 주문 + 진입가/수량 기록
-    2) 보유 중: 현재가로 익절/손절 도달 확인 → 실제 매도 주문 + 기록삭제
+    1) 매수: RSI 조건 충족 시 1회분(order_usdt) 매수 → 진입가/수량을 하나의 lot으로 기록
+       (보유 lot이 있어도 추가 매수 가능: max_lots 이내, 최저 진입가보다 buy_gap_pct 이상 낮을 때)
+    2) 매도: lot별로 자기 매수가 기준 익절/손절 도달 확인 → 해당 lot 수량만 매도
   → 주문 성공을 확인한 뒤에만 상태를 기록한다 (실패 시 유령 포지션 방지)
 
 [안전장치]
@@ -103,6 +104,8 @@ CFG = {
     "leverage"     : 3,          # 거래소에 실제 설정할 레버리지
     "order_usdt"   : 10.0,       # ⚠️ 1회 매매 증거금(USDT) — ×3배 레버리지 = 노출 30USDT (2026-09-19: 30→10, 리스크 축소)
     "auto_trade"   : True,       # ✅ 실전 자동매매 활성화 (2026-08-24 사용자 확정)
+    "max_lots"     : 5,          # 동시에 보유할 수 있는 매수 lot 최대 개수 (2026-09-21 추가)
+    "buy_gap_pct"  : 1.0,        # 추가 매수는 보유 중인 lot 중 최저 진입가보다 이 % 이상 낮을 때만 (0이면 RSI만 충족하면 매 점검마다 매수)
     "state_file"   : "coin_range_holdings.json",
 }
 
@@ -224,12 +227,23 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce
 # ══════════════════════════════════════════════════════
 #  보유 상태 저장/로드 (봇이 자동 추적)
 # ══════════════════════════════════════════════════════
+def _normalize(h: dict) -> dict:
+    """옛 형식(심볼당 단일 포지션)을 lot 목록 형식으로 변환."""
+    out = {}
+    for sym, pos in h.items():
+        if "lots" in pos:
+            out[sym] = pos
+        elif pos.get("entry_price"):
+            keys = ("entry_price", "entry_time", "qty", "auto_traded")
+            out[sym] = {"lots": [{k: pos[k] for k in keys if k in pos}]}
+    return out
+
 def load_holdings() -> dict:
     path = CFG["state_file"]
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
-                return json.load(f)
+                return _normalize(json.load(f))
         except Exception:
             return {}
     return {}
@@ -282,54 +296,46 @@ def fetch_recent(symbol: str, timeframe: str, limit: int = 120):
 # ══════════════════════════════════════════════════════
 def check_coin(symbol: str, params: dict, holdings: dict) -> dict:
     """
-    한 코인을 점검하고, 필요 시 신호를 반환.
-    반환: {"signal": "buy"|"sell_target"|"sell_stop"|None, ...}
+    한 코인을 점검. 매수는 lot 단위로 독립 관리한다:
+    각 lot은 자기 매수가 기준으로 +target_pct 익절 / -stop_pct 손절되며, 해당 lot만 매도한다.
+    반환: {"sells": [{"lot", "change", "reason"}], "buy": bool, ...}
     """
     ohlcv = fetch_recent(symbol, CFG["timeframe"], 120)
     if len(ohlcv) < CFG["ma_period"] + 2:
-        return {"signal": None, "error": "데이터 부족"}
+        return {"error": "데이터 부족", "sells": [], "buy": False, "lots": []}
 
     closes = [c[4] for c in ohlcv]
     cur_price = closes[-1]
     rsi = calc_rsi(closes, CFG["rsi_period"])
     ma = calc_sma(closes, CFG["ma_period"])
     label = params["label"]
+    lots = holdings.get(symbol, {}).get("lots", [])
 
-    held = holdings.get(symbol)
+    sells = []
+    for lot in lots:
+        change = (cur_price - lot["entry_price"]) / lot["entry_price"] * 100
+        if change >= params["target_pct"]:
+            sells.append({"lot": lot, "change": change, "reason": "target"})
+        elif change <= -params["stop_pct"]:
+            sells.append({"lot": lot, "change": change, "reason": "stop"})
 
-    # ── 보유 중: 익절/손절 확인 ────────────────────────
-    if held:
-        entry = held["entry_price"]
-        change_pct = (cur_price - entry) / entry * 100
-        target = params["target_pct"]
-        stop = params["stop_pct"]
-
-        if change_pct >= target:
-            return {"signal": "sell_target", "price": cur_price,
-                    "entry": entry, "change": change_pct, "label": label}
-        if change_pct <= -stop:
-            return {"signal": "sell_stop", "price": cur_price,
-                    "entry": entry, "change": change_pct, "label": label}
-        # 보유 유지
-        return {"signal": None, "held": True, "price": cur_price,
-                "entry": entry, "change": change_pct, "rsi": rsi, "label": label}
-
-    # ── 미보유: 매수 신호 확인 ─────────────────────────
+    res = {"price": cur_price, "rsi": rsi, "label": label, "sells": sells,
+           "lots": lots, "buy": False, "down_market": False}
     if rsi is None:
-        return {"signal": None, "label": label}
+        return res
 
     # 하락장 필터 (칼 안 잡기)
-    down_market = False
     if ma and ma > 0 and (cur_price - ma) / ma * 100 < -CFG["down_guard"]:
-        down_market = True
+        res["down_market"] = True
 
-    if rsi <= params["rsi_buy"] and not down_market:
-        return {"signal": "buy", "price": cur_price, "rsi": rsi,
-                "target_pct": params["target_pct"], "stop_pct": params["stop_pct"],
-                "label": label}
-
-    return {"signal": None, "price": cur_price, "rsi": rsi,
-            "down_market": down_market, "label": label}
+    if rsi <= params["rsi_buy"] and not res["down_market"]:
+        if len(lots) >= CFG["max_lots"]:
+            res["skip"] = f"최대 {CFG['max_lots']}개 lot 보유 중"
+        elif lots and cur_price > min(l["entry_price"] for l in lots) * (1 - CFG["buy_gap_pct"] / 100):
+            res["skip"] = f"추가매수 간격 미달(최저 진입가 대비 -{CFG['buy_gap_pct']:.1f}% 필요)"
+        else:
+            res["buy"] = True
+    return res
 
 # ══════════════════════════════════════════════════════
 #  알림 메시지 생성
@@ -382,25 +388,71 @@ def run_check(send: bool = True):
 
     holdings = load_holdings()
     alerts = []
+    live = CFG["auto_trade"] and send
 
     for symbol, params in COINS.items():
         r = check_coin(symbol, params, holdings)
         label = params["label"]
+        exec_symbol = params.get("exec_symbol", symbol)
+        pos = holdings.setdefault(symbol, {"lots": []})
+        lots = pos["lots"]
+        sold_any = False
 
-        if r["signal"] == "buy":
-            # ⚠️ 실제 매수 주문 → 체결 성공을 확인한 뒤에만 보유 기록
-            #    (실패 시 기록하면 유령 포지션이 되어 계속 잘못 감시하게 됨)
-            msg = msg_buy(r, symbol)
-            if CFG["auto_trade"] and send:
-                ok, detail, qty, info = place_order(params.get("exec_symbol", symbol), "buy", CFG["order_usdt"], r["price"], reduce_only=False)
+        # ── 매도: lot별로 자기 매수가 기준 익절/손절 ──────────
+        for sl in r["sells"]:
+            lot, reason = sl["lot"], sl["reason"]
+            word = "익절" if reason == "target" else "손절"
+            rr = {"label": label, "entry": lot["entry_price"], "price": r["price"], "change": sl["change"]}
+            msg = msg_sell(rr, symbol, reason)
+            qty_lot = lot.get("qty")
+            sold_any = True
+
+            if live and qty_lot:
+                ok, detail, _, info = place_order(exec_symbol, "sell", CFG["order_usdt"], r["price"], reduce_only=True, qty_override=qty_lot)
                 if ok:
-                    holdings[symbol] = {
-                        "entry_price": info.get("avg_price", r["price"]), "entry_time": now,
-                        "target_pct": params["target_pct"], "stop_pct": params["stop_pct"],
-                        "qty": info.get("filled_qty", qty), "auto_traded": True,
-                    }
+                    filled = info.get("filled_qty", qty_lot)
+                    profit_usdt = filled * (r["price"] - lot["entry_price"])
                     est_note = " (추정치)" if info.get("estimated") else ""
-                    msg += (f"\n\n🤖 <b>자동매수 실행됨</b>\n"
+                    msg += (f"\n\n🤖 <b>자동매도 실행됨 (해당 매수분만)</b>\n"
+                            f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
+                            f"💵 체결가: {info.get('avg_price', 0):,.2f}\n"
+                            f"📦 수량: {info.get('filled_qty', 0):.6f}\n"
+                            f"📊 이번 거래 수익률: {sl['change']:+.2f}% "
+                            f"(레버리지 반영 {sl['change']*CFG['leverage']:+.2f}%)\n"
+                            f"💸 실현 손익(추정, 수수료 제외): {profit_usdt:+,.2f} USDT\n"
+                            f"{detail}")
+                    remaining = qty_lot - filled
+                    if remaining > qty_lot * 0.01:
+                        lot["qty"] = remaining   # 일부만 체결되면 남은 수량으로 유지
+                    else:
+                        lots.remove(lot)         # 청산 성공 시에만 해당 lot 삭제
+                    print(f"  {'🎯' if reason=='target' else '🔴'} {label}: {word} 체결 (매수 ${lot['entry_price']:,.2f} 기준 {sl['change']:+.1f}%) {detail}")
+                    _record("sell", now, r["price"], note=word)
+                else:
+                    msg += f"\n\n🤖 ❌ 자동매도 실패: {detail}\n→ 즉시 확인 필요! 다음 점검에서 재시도됩니다"
+                    print(f"  ❌ {label}: 매도 실패 — {detail} (lot 유지, 재시도 예정)")
+            else:
+                if live and not qty_lot:
+                    msg += "\n\n🤖 자동매도 생략: 봇이 기록한 보유수량 없음(수동 매수분으로 추정) — 직접 매도하세요"
+                    lots.remove(lot)
+                elif send:
+                    lots.remove(lot)   # 알림전용 모드는 기록만 정리
+                print(f"  {'🎯' if reason=='target' else '🔴'} {label}: {word} 신호 (매수 ${lot['entry_price']:,.2f} 기준 {sl['change']:+.1f}%) [알림전용/점검모드 또는 수량미상]")
+            alerts.append(msg)
+
+        # ── 매수: 같은 점검에서 매도가 있었으면 건너뜀(매도-재매수 반복 방지) ──
+        if r["buy"] and not sold_any:
+            rb = {"price": r["price"], "rsi": r["rsi"], "label": label,
+                  "target_pct": params["target_pct"], "stop_pct": params["stop_pct"]}
+            msg = msg_buy(rb, symbol)
+            if live:
+                # ⚠️ 체결 성공을 확인한 뒤에만 lot 기록 (실패 시 유령 포지션 방지)
+                ok, detail, qty, info = place_order(exec_symbol, "buy", CFG["order_usdt"], r["price"], reduce_only=False)
+                if ok:
+                    lots.append({"entry_price": info.get("avg_price", r["price"]), "entry_time": now,
+                                 "qty": info.get("filled_qty", qty), "auto_traded": True})
+                    est_note = " (추정치)" if info.get("estimated") else ""
+                    msg += (f"\n\n🤖 <b>자동매수 실행됨</b> (보유 {len(lots)}/{CFG['max_lots']}개 lot)\n"
                             f"💰 매수 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
                             f"💵 체결가: {info.get('avg_price', 0):,.2f}\n"
                             f"📦 수량: {info.get('filled_qty', 0):.6f}\n"
@@ -411,59 +463,29 @@ def run_check(send: bool = True):
                     msg += f"\n\n🤖 ❌ 자동매수 실패: {detail}\n→ 신호는 유효하나 주문은 안 됨. 다음 점검에서 재시도됩니다"
                     print(f"  ❌ {label}: 매수 실패 — {detail}")
             else:
-                # 알림 전용 모드: 참고용으로만 보유 기록 (실주문 없음)
-                holdings[symbol] = {
-                    "entry_price": r["price"], "entry_time": now,
-                    "target_pct": params["target_pct"], "stop_pct": params["stop_pct"],
-                }
-                print(f"  🟢 {label}: 매수 신호 (RSI {r['rsi']:.1f}, ${r['price']:,.2f}) [알림전용]")
+                if send:   # 알림 전용 모드: 참고용으로만 기록 (실주문 없음)
+                    lots.append({"entry_price": r["price"], "entry_time": now})
+                print(f"  🟢 {label}: 매수 신호 (RSI {r['rsi']:.1f}, ${r['price']:,.2f}) [알림전용/점검모드]")
             alerts.append(msg)
 
-        elif r["signal"] in ("sell_target", "sell_stop"):
-            reason = "target" if r["signal"] == "sell_target" else "stop"
-            msg = msg_sell(r, symbol, reason)
-            held = holdings.get(symbol, {})
-            qty_held = held.get("qty")
-
-            if CFG["auto_trade"] and send and qty_held:
-                # 보유수량을 실제 알고 있을 때만(=봇이 직접 산 것만) 자동매도
-                ok, detail, _, info = place_order(params.get("exec_symbol", symbol), "sell", CFG["order_usdt"], r["price"], reduce_only=True, qty_override=qty_held)
-                if ok:
-                    # 실현 손익 추정 (보유수량×가격차, 수수료 제외)
-                    profit_usdt = qty_held * (r["price"] - r["entry"])
-                    est_note = " (추정치)" if info.get("estimated") else ""
-                    msg += (f"\n\n🤖 <b>자동매도 실행됨</b>\n"
-                            f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
-                            f"💵 체결가: {info.get('avg_price', 0):,.2f}\n"
-                            f"📦 수량: {info.get('filled_qty', 0):.6f}\n"
-                            f"📊 이번 거래 수익률: {r['change']:+.2f}% "
-                            f"(레버리지 반영 {r['change']*CFG['leverage']:+.2f}%)\n"
-                            f"💸 실현 손익(추정, 수수료 제외): {profit_usdt:+,.2f} USDT\n"
-                            f"{detail}")
-                    holdings.pop(symbol, None)   # 청산 성공 시에만 기록 삭제
-                    print(f"  {'🎯' if reason=='target' else '🔴'} {label}: 매도 체결 ({r['change']:+.1f}%) {detail}")
-                    _record("sell", now, r["price"], note=("익절" if reason=="target" else "손절"))
-                else:
-                    msg += f"\n\n🤖 ❌ 자동매도 실패: {detail}\n→ 즉시 확인 필요! 다음 점검에서 재시도됩니다"
-                    print(f"  ❌ {label}: 매도 실패 — {detail} (보유기록 유지, 재시도 예정)")
-                    # 실패 시 holdings 그대로 유지 → 다음 점검에서 재시도
+        # ── 상태 출력 ──────────────────────────────────────
+        if not r["sells"] and not (r["buy"] and not sold_any):
+            if lots:
+                for l in lots:
+                    ch = (r["price"] - l["entry_price"]) / l["entry_price"] * 100
+                    print(f"  ⏳ {label}: 보유 lot 진입 ${l['entry_price']:,.2f} 수량 {l.get('qty','?')} (현재 {ch:+.1f}%)")
+                if r.get("skip"):
+                    print(f"     추가매수 보류: {r['skip']}")
             else:
-                if CFG["auto_trade"] and send and not qty_held:
-                    msg += "\n\n🤖 자동매도 생략: 봇이 기록한 보유수량 없음(수동 매수분으로 추정) — 직접 매도하세요"
-                holdings.pop(symbol, None)
-                print(f"  {'🎯' if reason=='target' else '🔴'} {label}: {reason} 신호 ({r['change']:+.1f}%) [알림전용 또는 수량미상]")
-            alerts.append(msg)
+                rsi_str = f"RSI {r.get('rsi'):.1f}" if r.get('rsi') else "데이터부족"
+                dm = " [하락장 보류]" if r.get("down_market") else ""
+                print(f"  ⚪ {label}: 대기 ({rsi_str}){dm}")
 
-        elif r.get("held"):
-            print(f"  ⏳ {label}: 보유 중 (진입 ${r['entry']:,.2f}, "
-                  f"현재 {r['change']:+.1f}%, RSI {r.get('rsi') or 0:.1f})")
+        if not lots:
+            holdings.pop(symbol, None)
 
-        else:
-            rsi_str = f"RSI {r.get('rsi'):.1f}" if r.get('rsi') else "데이터부족"
-            dm = " [하락장 보류]" if r.get("down_market") else ""
-            print(f"  ⚪ {label}: 대기 ({rsi_str}){dm}")
-
-    save_holdings(holdings)
+    if send:
+        save_holdings(holdings)
 
     # 신호가 있으면 디스코드 발송
     if alerts and send:
@@ -498,9 +520,10 @@ if __name__ == "__main__":
             print("  보유 없음 (idle)")
         else:
             for symbol, pos in h.items():
-                print(f"  {symbol}: 진입 ${pos.get('entry_price',0):,.2f}, "
-                      f"수량 {pos.get('qty','?')}, "
-                      f"{'[자동매매]' if pos.get('auto_traded') else '[알림전용]'}")
+                for i, lot in enumerate(pos["lots"], 1):
+                    print(f"  {symbol} lot{i}: 진입 ${lot.get('entry_price',0):,.2f}, "
+                          f"수량 {lot.get('qty','?')}, "
+                          f"{'[자동매매]' if lot.get('auto_traded') else '[알림전용]'}")
         sys.exit(0)
 
     # 기본: 점검 + 신호 발송
