@@ -393,6 +393,10 @@ def run_check(send: bool = True):
     for symbol, params in COINS.items():
         r = check_coin(symbol, params, holdings)
         label = params["label"]
+        if r.get("error"):
+            # 시세 조회 실패 등으로 가격 정보가 없음 — 보유 lot은 그대로 두고 이번 점검만 건너뜀
+            print(f"  ⚠️ {label}: {r['error']} — 이번 점검 건너뜀")
+            continue
         exec_symbol = params.get("exec_symbol", symbol)
         pos = holdings.setdefault(symbol, {"lots": []})
         lots = pos["lots"]
