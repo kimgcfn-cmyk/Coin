@@ -20,13 +20,15 @@ Bitget USDT-M 선물 전 종목을 주기적으로 훑어서, 단기간에 가�
   12시간마다 '스캔 진행중' 생존 알림을 보낸다 (heartbeat_hours, 0이면 끔)
 
 [중복 알림 방지]
+  1분마다 실행되므로 이전 실행이 끝나지 않았으면(lock) 건너뛰고,
+  한 번 실행은 run_budget_sec(40초)를 넘기지 않는다.
   같은 종목은 cooldown_min(60분) 동안 재알림하지 않는다.
   단, 직전 알림가보다 rearm_pct(4%) 이상 더 오르면 다시 알린다.
   한 번 실행에 보내는 알림은 max_alerts(5건)까지 (점수 높은 순).
 
 [주의]
   - 최초 실행 후 history가 쌓여야 감지가 시작된다 (5분 구간은 약 5분 뒤부터,
-    30분 구간은 약 30분 뒤부터). cron 5분 주기를 전제로 한다.
+    30분 구간은 약 30분 뒤부터). cron 1분 주기를 전제로 한다.
   - 급등 "이후" 알림이라 추격매수 신호가 아니다. 이미 오른 뒤라는 점을 감안할 것.
 
 [.env 설정 — 이미 있다면 재사용]
@@ -39,11 +41,11 @@ Bitget USDT-M 선물 전 종목을 주기적으로 훑어서, 단기간에 가�
   python coin_surge_monitor.py --status  # history 축적 현황 / 최근 알림
   python coin_surge_monitor.py --reset   # 상태 초기화
 
-cron 등록 (5분마다):
-  */5 * * * * cd /home/ec2-user/trading-bot && venv/bin/python coin_surge_monitor.py >> logs/coin_surge.log 2>&1
+cron 등록 (1분마다):
+  * * * * * cd /home/ec2-user/trading-bot && venv/bin/python coin_surge_monitor.py >> logs/coin_surge.log 2>&1
 """
 
-import sys, json, os, re, time
+import sys, json, os, re, time, fcntl
 from datetime import datetime, timedelta, timezone
 
 import requests
@@ -74,6 +76,7 @@ CFG = {
     "max_alerts"       : 5,                           # 1회 실행당 최대 알림 수
     "cooldown_min"     : 60,                          # 같은 종목 재알림 금지 시간
     "rearm_pct"        : 4.0,                         # 직전 알림가 대비 이만큼 더 오르면 재알림
+    "run_budget_sec"   : 40,                          # 1회 실행 시간 상한 (1분 cron 겹침 방지)
     "heartbeat_hours"  : 12,                          # '스캔 진행중' 생존 알림 간격 (0이면 끔)
     "state_file"       : "coin_surge_state.json",
 }
@@ -292,6 +295,7 @@ def build_heartbeat() -> str:
 #  메인 점검
 # ══════════════════════════════════════════════════════
 def run_check(send: bool = True):
+    t0 = time.time()
     now = int(time.time())
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"\n{'='*56}")
@@ -327,6 +331,9 @@ def run_check(send: bool = True):
     checked = 0
     for c in cands:
         if len(alerts) >= CFG["max_alerts"] or checked >= CFG["max_candidates"]:
+            break
+        if time.time() - t0 > CFG["run_budget_sec"]:
+            print(f"  ⏱ 실행 시간 {CFG['run_budget_sec']}초 초과 — 남은 후보는 다음 실행으로")
             break
         sym = c["symbol"]
         mv = " / ".join(f"{fmt_window(m)} {v:+.1f}%" for m, v in c["changes"].items() if v is not None)
@@ -398,6 +405,16 @@ def show_status():
 # ══════════════════════════════════════════════════════
 #  실행
 # ══════════════════════════════════════════════════════
+def acquire_lock():
+    """이전 실행이 아직 도는 중이면 None. (1분 cron에서 같은 급등을 중복 알림하지 않게)"""
+    f = open(CFG["state_file"] + ".lock", "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
 if __name__ == "__main__":
     args = sys.argv[1:]
 
@@ -415,4 +432,10 @@ if __name__ == "__main__":
         show_top()
         sys.exit(0)
 
+    lock = None
+    if "--check" not in args:
+        lock = acquire_lock()
+        if lock is None:
+            print("  ⏭ 이전 실행이 아직 진행 중 — 이번 실행 건너뜀")
+            sys.exit(0)
     run_check(send=("--check" not in args))
