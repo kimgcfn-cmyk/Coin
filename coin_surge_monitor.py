@@ -14,6 +14,14 @@ Bitget USDT-M 선물 전 종목을 주기적으로 훑어서, 단기간에 가�
        최근 3개 마감봉 평균 거래대금 / 그 직전 20개 마감봉 평균 >= 2.5배
      → 가격 급등 + 거래량 동반일 때만 알림 (거래량 없는 호가 장난 걸러냄)
 
+[알림 내용 — 기존 급등 스캐너(telegram_alert_scanner.py)와 같은 형식/규칙]
+  방향 · 진입가 · 상승률 · 거래량 배수 · 선행 가속도 점수 · 손절가/목표가/리스크
+  - 방향: 5분봉 선행 가속도 점수 >= 1.0 이면 롱(가속 중), 미만이면 숏(과열 되돌림 베팅)
+  - 손절: 탐지 구간(최근 약 35분) 고점/저점 ± 5%, 손익비 1:5
+  - 12시간마다 '스캔 진행중' 생존 알림을 보낸다 (heartbeat_hours, 0이면 끔)
+  ※ 방향/손절/목표 규칙은 12시간 +30% 급등용으로 만든 것을 그대로 가져온 것이라
+    5~30분 구간 급등에 대해서는 검증되지 않았다.
+
 [중복 알림 방지]
   같은 종목은 cooldown_min(60분) 동안 재알림하지 않는다.
   단, 직전 알림가보다 rearm_pct(4%) 이상 더 오르면 다시 알린다.
@@ -39,7 +47,7 @@ cron 등록 (5분마다):
 """
 
 import sys, json, os, re, time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -69,6 +77,14 @@ CFG = {
     "max_alerts"       : 5,                           # 1회 실행당 최대 알림 수
     "cooldown_min"     : 60,                          # 같은 종목 재알림 금지 시간
     "rearm_pct"        : 4.0,                         # 직전 알림가 대비 이만큼 더 오르면 재알림
+    # 선행 가속도 / 손절·목표 (기존 급등 스캐너와 동일 규칙)
+    "accel_lookback_candles": 3,                      # 최근 3봉 vs 직전 3봉 (5분봉)
+    "accel_price_weight"    : 0.5,
+    "accel_vol_weight"      : 0.5,
+    "accel_score_threshold" : 1.0,                    # 이상이면 롱, 미만이면 숏
+    "sl_buffer_pct"    : 5.0,                         # 손절: 구간 고점/저점 ± 5%
+    "rr_ratio"         : 5,                           # 손익비 1:5
+    "heartbeat_hours"  : 12,                          # '스캔 진행중' 생존 알림 간격 (0이면 끔)
     "state_file"       : "coin_surge_state.json",
 }
 
@@ -257,17 +273,82 @@ def fmt_big(v: float) -> str:
 def fmt_window(m: int) -> str:
     return f"{m//60}시간" if m % 60 == 0 else f"{m}분"
 
-def build_message(c: dict, ratio: float) -> str:
-    base = c["symbol"][:-4]
+def kst_now() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S KST")
+
+def lead_accel(rows: list) -> dict:
+    """5분봉 선행 가속도 (기존 급등 스캐너와 동일 계산): 최근 N봉 vs 직전 N봉."""
+    n = CFG["accel_lookback_candles"]
+    if len(rows) < 2 * n:
+        return {"available": False, "score": 0.0}
+    older, newer = rows[-2 * n:-n], rows[-n:]
+    o_open, o_close = older[0][1], older[-1][4]
+    n_open, n_close = newer[0][1], newer[-1][4]
+    o_chg = (o_close - o_open) / o_open * 100 if o_open > 0 else 0
+    n_chg = (n_close - n_open) / n_open * 100 if n_open > 0 else 0
+    price_accel = n_chg - o_chg
+    o_vol = sum(c[6] for c in older)
+    n_vol = sum(c[6] for c in newer)
+    vol_accel = ((n_vol / o_vol) - 1.0) * 10 if o_vol > 0 else -10.0
+    score = (CFG["accel_price_weight"] * (price_accel / 5.0)
+             + CFG["accel_vol_weight"] * (vol_accel / 10.0))
+    return {"available": True, "score": round(score, 2)}
+
+def compute_sl_tp(entry: float, high_p: float, low_p: float, direction: str):
+    """손절/목표가. 목표가가 0 이하로 나오는 경우(숏, 리스크 과다)는 None."""
+    buf, rr = CFG["sl_buffer_pct"] / 100, CFG["rr_ratio"]
+    if direction == "short":
+        sl = high_p * (1 + buf) if high_p > entry else entry * (1 + buf)
+        tp = entry - (sl - entry) * rr
+    else:
+        sl = low_p * (1 - buf) if 0 < low_p < entry else entry * (1 - buf)
+        tp = entry + (entry - sl) * rr
+    return sl, (tp if tp > 0 else None)
+
+def build_signal(rows: list, entry: float) -> dict:
+    """방향(롱/숏) + 손절/목표 계산. rows는 5분봉(마지막은 진행 중)."""
+    accel = lead_accel(rows)
+    is_long = accel["available"] and accel["score"] >= CFG["accel_score_threshold"]
+    direction = "long" if is_long else "short"
+    n_bars = max(m for m, _ in CFG["windows"]) // 5 + 1      # 가장 긴 구간을 덮는 5분봉 수
+    bars = rows[-n_bars:]
+    high_p, low_p = max(c[2] for c in bars), min(c[3] for c in bars)
+    sl, tp = compute_sl_tp(entry, high_p, low_p, direction)
+    return {"direction": direction,
+            "label": "롱 (상승 베팅)" if is_long else "숏 (하락 베팅)",
+            "accel": accel, "sl": sl, "tp": tp,
+            "risk_pct": abs(sl - entry) / entry * 100}
+
+def build_message(c: dict, ratio: float, sig: dict) -> str:
     moves = " / ".join(f"{fmt_window(m)} {v:+.1f}%"
                        for m, v in c["changes"].items() if v is not None)
-    return (f"🚀 <b>{base} 급등 감지</b> ({c['symbol']})\n"
-            f"현재가: ${fmt_price(c['price'])}\n"
-            f"📈 {moves}\n"
-            f"📊 거래량 ×{ratio:.1f} (5분봉 최근 15분 / 직전 100분 평균)\n"
-            f"24시간 {c['chg24']:+.1f}% · 거래대금 {fmt_big(c['vol'])} USDT\n"
-            f"펀딩비 {c['funding']:+.4f}%\n"
-            f"⚠️ 이미 오른 뒤의 알림입니다 — 추격 진입은 신중히")
+    a = sig["accel"]
+    accel_note = f"{a['score']:+.2f}" if a["available"] else "데이터 부족"
+    tp_txt = fmt_price(sig["tp"]) if sig["tp"] else "산출 불가 (리스크 과다)"
+    sep = "━━━━━━━━━━━━━━━━━━━"
+    return (f"🚨 <b>급등 탐지 — {c['symbol']}</b>\n"
+            f"{kst_now()}\n"
+            f"{sep}\n"
+            f"방향: <b>{sig['label']}</b>\n"
+            f"진입가: {fmt_price(c['price'])}\n"
+            f"상승률: {moves}\n"
+            f"거래량 배수: {ratio:.1f}x\n"
+            f"선행 가속도 점수: {accel_note}\n"
+            f"24시간 {c['chg24']:+.1f}% · 거래대금 {fmt_big(c['vol'])} USDT · 펀딩 {c['funding']:+.4f}%\n"
+            f"{sep}\n"
+            f"📍 손절가: {fmt_price(sig['sl'])}\n"
+            f"🎯 목표가: {tp_txt}\n"
+            f"리스크: {sig['risk_pct']:.2f}%  (손익비 1:{CFG['rr_ratio']})\n"
+            f"{sep}\n"
+            f"⚠️ 자동 주문 아님 — 직접 거래소에서 진입하세요\n"
+            f"⚠️ 표본 부족 전략, 반드시 소액으로 검증하세요")
+
+def build_heartbeat() -> str:
+    conds = " / ".join(f"{fmt_window(m)} {t:.1f}%↑" for m, t in CFG["windows"])
+    return (f"🔍 <b>스캔 진행중</b>\n"
+            f"{kst_now()}\n"
+            f"조건: {conds} & 거래량 {CFG['min_vol_ratio']}x↑\n"
+            f"({CFG['heartbeat_hours']}시간 간격으로 알립니다)")
 
 # ══════════════════════════════════════════════════════
 #  메인 점검
@@ -291,6 +372,14 @@ def run_check(send: bool = True):
     print(f"  전체 {len(tickers)}종목 중 감시 대상 {n_elig}종목 "
           f"(24h 거래대금 {fmt_big(CFG['min_vol_usdt'])}+), history {depth:.0f}분 축적")
 
+    hb_hours = CFG["heartbeat_hours"]
+    if hb_hours and now - state.get("last_heartbeat", 0) >= hb_hours * 3600:
+        if send:
+            send_discord(build_heartbeat())
+            state["last_heartbeat"] = now
+        else:
+            print("  [--check] 생존 알림('스캔 진행중') 발송 시점 — 발송 생략")
+
     cands = find_candidates(state, tickers, now)
     if not cands:
         first = min(m for m, _ in CFG["windows"])
@@ -307,15 +396,17 @@ def run_check(send: bool = True):
             print(f"  ⏸ {sym}: 후보 ({mv}) — 쿨다운 중")
             continue
         checked += 1
-        ratio = volume_ratio(fetch_candles(sym))
+        rows = fetch_candles(sym)
+        ratio = volume_ratio(rows)
         time.sleep(0.15)
         if ratio is None:
             print(f"  ⚪ {sym}: 후보 ({mv}) — 캔들 부족, 거래량 확인 불가")
         elif ratio < CFG["min_vol_ratio"]:
             print(f"  ⚪ {sym}: 후보 ({mv}) — 거래량 ×{ratio:.1f} < ×{CFG['min_vol_ratio']} (제외)")
         else:
-            print(f"  🚀 {sym}: 급등 확정 ({mv}, 거래량 ×{ratio:.1f})")
-            alerts.append((c, ratio))
+            sig = build_signal(rows, c["price"])
+            print(f"  🚀 {sym}: 급등 확정 ({mv}, 거래량 ×{ratio:.1f}) → {sig['label']}")
+            alerts.append((c, ratio, sig))
             state.setdefault("alerted", {})[sym] = {"ts": now, "price": c["price"]}
 
     # 24시간 지난 알림 기록 정리
@@ -330,8 +421,8 @@ def run_check(send: bool = True):
     if not alerts:
         print("\n  알림 없음")
         return
-    for i, (c, ratio) in enumerate(alerts):
-        msg = build_message(c, ratio)
+    for c, ratio, sig in alerts:
+        msg = build_message(c, ratio, sig)
         if send:
             send_discord(msg)
             time.sleep(0.5)
