@@ -464,13 +464,18 @@ def run_check(send: bool = True):
                     print(f"  🟢 {label}: 매수 체결 (RSI {r['rsi']:.1f}, ${r['price']:,.2f}) {detail}")
                     _record("buy", now, r["price"])
                 else:
-                    msg += f"\n\n🤖 ❌ 자동매수 실패: {detail}\n→ 신호는 유효하나 주문은 안 됨. 다음 점검에서 재시도됩니다"
                     print(f"  ❌ {label}: 매수 실패 — {detail}")
+                    if "40762" in detail or "exceeds the balance" in detail:
+                        # 잔고 부족(Bitget 40762): 같은 실패가 반복되므로 디스코드 알림은 생략 (로그에만 남김)
+                        msg = None
+                    else:
+                        msg += f"\n\n🤖 ❌ 자동매수 실패: {detail}\n→ 신호는 유효하나 주문은 안 됨. 다음 점검에서 재시도됩니다"
             else:
                 if send:   # 알림 전용 모드: 참고용으로만 기록 (실주문 없음)
                     lots.append({"entry_price": r["price"], "entry_time": now})
                 print(f"  🟢 {label}: 매수 신호 (RSI {r['rsi']:.1f}, ${r['price']:,.2f}) [알림전용/점검모드]")
-            alerts.append(msg)
+            if msg:
+                alerts.append(msg)
 
         # ── 상태 출력 ──────────────────────────────────────
         if not r["sells"] and not (r["buy"] and not sold_any):
