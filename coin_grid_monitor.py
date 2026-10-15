@@ -340,8 +340,12 @@ def run_check(send: bool = True):
             if send:
                 _record("buy", now, price)
         else:
-            msg = f"❌ <b>{CFG['symbol']} 매수 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
             print(f"  ❌ 매수 실패: {detail}")
+            if "40762" in detail or "exceeds the balance" in detail:
+                # 잔고 부족(Bitget 40762): 10분마다 같은 실패가 반복되므로 디스코드 알림은 생략 (로그에만 남김)
+                msg = None
+            else:
+                msg = f"❌ <b>{CFG['symbol']} 매수 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
 
     elif action == "sell":
         qty_to_sell = (CFG["order_usdt"] * CFG["leverage"]) / price
