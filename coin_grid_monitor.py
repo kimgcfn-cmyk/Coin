@@ -147,6 +147,24 @@ def get_exchange():
 
 UTA = {"uta": True, "productType": "USDT-FUTURES"}   # 통합계정(UTA) API 사용 (2026-10-15 계정 전환, Classic API는 40085)
 
+def fill_from_order(o: dict) -> dict:
+    """fetch_order 결과에서 실제 체결 수량/평균가/체결금액을 뽑는다.
+    통합계정 응답은 ccxt가 average/cost를 못 채우는 경우가 있어 원본(info)의
+    cumExecQty / avgPrice / cumExecValue를 직접 읽는다. 값이 없으면 해당 항목은 None."""
+    inf = o.get("info") or {}
+    def num(*vals):
+        for v in vals:
+            try:
+                f = float(v)
+                if f > 0:
+                    return f
+            except (TypeError, ValueError):
+                pass
+        return None
+    return {"filled": num(o.get("filled"), inf.get("cumExecQty")),
+            "average": num(o.get("average"), inf.get("avgPrice")),
+            "cost": num(o.get("cost"), inf.get("cumExecValue"))}
+
 def check_leverage(ex, symbol: str) -> tuple:
     """계정에 설정된 해당 종목 레버리지가 CFG와 같은지 확인. 사용자가 수동 포지션 때문에 바꿔둔
     경우(같은 종목, 교차 마진) 봇 수량 계산이 어긋나므로 다르면 주문을 보류한다.
@@ -257,14 +275,15 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
             if not oid:
                 break
             try:
-                o = ex.fetch_order(oid, symbol, UTA)
-                if o.get("filled"):
-                    fill = o
+                f = fill_from_order(ex.fetch_order(oid, symbol, UTA))
+                if f["filled"]:
+                    fill = f
                     break
             except Exception:
                 pass
             time.sleep(0.6)
-        order = {**order, **{k: v for k, v in fill.items() if v is not None}} if fill else order
+        if fill:
+            order = {**order, **{k: v for k, v in fill.items() if v is not None}}
 
         actual_cost = order.get("cost")
         actual_avg = order.get("average") or order.get("price")
