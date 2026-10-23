@@ -29,7 +29,13 @@
     +1% 상승 → 보유 중이면 10USDT어치 매도, 기준가를 그 가격으로 갱신(더 위로 래칫)
   총 매수 누적액이 max_total_usdt 도달 시 → 매수 중단(매도 감시는 계속)
 
-[손절 — 2026-10-23 추가]
+[고점 청산 — 2026-10-23 추가, 급등탐지 종목용]
+  급등한 종목은 더 오른 뒤 24시간 안에 급락하는 경우가 많아서, 봇이 시작된 뒤의 최고가(peak_price)를 기록해 두고
+  현재가가 고점 대비 -12%(trail_exit_pct) 이하로 내려가면 봇이 가진 물량(state의 qty)을 전량 시장가(reduce-only)로 청산하고
+  봇을 정지(halted)한다. 사용자의 다른 수동 물량은 건드리지 않는다. 정지 뒤 다시 시작하려면 --resume.
+  (과거 급등 이벤트 42건 24시간 모의: 최악 손실 -21.7 → -8.3 USDT, 평균 수익은 감소 — 보험 성격)
+
+[손절 — 2026-10-23 추가, 현재 stop_loss=False로 꺼둠]
   총 투입 한도(max_total_usdt)까지 매수한 뒤에도 반등 없이 기준가 대비 -1% 더 내려가면 손절을 시작한다.
   손절이 시작된 시점의 보유 수량을 기준으로 -1% 하락할 때마다 그 수량의 10%씩 시장가(reduce-only)로 매도하고,
   기준가를 그 가격으로 내린다. 남는 물량이 1회 주문 한 칸(10USDT어치) 미만이 되면 전량 정리한다.
@@ -114,7 +120,8 @@ CFG = {
     "max_total_usdt"  : 100.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (10회분, 변동성이 커서 보수적으로)
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
     "guard_leverage"  : False,             # 계정 IRYS 레버리지(수동 포지션용 10배)와 달라도 주문 보류하지 않음
-    "stop_loss"       : True,              # 매수 한도 도달 후 계속 하락하면 단계 손절 (아래 [손절] 설명 참고)
+    "trail_exit_pct"  : 12.0,              # 고점 대비 -12% 하락 시 봇 물량 전량 청산 후 정지 (급등 종목용, 위 [고점 청산] 참고)
+    "stop_loss"       : False,             # 2026-10-23 끔 — 고점 청산으로 대체 (켜면 단계 손절+숏 모드 동작, 아래 설명)
     "stop_loss_frac"  : 0.10,              # 손절 시작 시점 보유 수량의 10%씩 (매번 같은 수량)
     "auto_trade"      : True,              # 2026-10-23 실전 가동 (사전 매수 30 USDT 등록 후)
     "state_file"      : "coin_grid_irys_state.json",
@@ -401,6 +408,49 @@ def run_check(send: bool = True):
         print(f"  ❌ {CFG['symbol']} 시세 조회 실패 — --find-symbol 로 정확한 심볼 확인 필요")
         return
     print(f"  현재가: {price:,.4f} USDT")
+
+    if state.get("halted"):
+        print(f"  ⏸️ 봇 정지 상태 ({state.get('halted_reason', '')}) — 재개하려면 --resume")
+        return
+
+    # 고점 추적 + 고점 대비 하락 시 전량 청산
+    state["peak_price"] = max(state.get("peak_price") or price, price)
+    trail = CFG.get("trail_exit_pct")
+    if trail and price <= state["peak_price"] * (1 - trail / 100):
+        have = state.get("qty", 0.0)
+        peak = state["peak_price"]
+        print(f"  🚨 고점 {peak:,.4f} 대비 {(price/peak-1)*100:.1f}% — 전량 청산 조건 ({trail:.0f}%)")
+        ok, detail, qty, info = True, "보유 물량 없음 — 청산 생략", 0, {}
+        if have > 0:
+            ok, detail, qty, info = place_order(CFG["symbol"], "sell", 0, price, reduce_only=True,
+                                                 dry_run=not send, qty_override=have)
+        if ok:
+            aq = info.get("filled_qty", have) if have > 0 else 0.0
+            fp = info.get("avg_price", price)
+            ref_before = state.get("reference_price") or price
+            pnl = aq * (fp - ref_before)
+            state.update({"qty": max(0.0, have - aq), "holdings_usdt": 0.0, "halted": True,
+                          "halted_reason": f"고점 {peak:,.4f} 대비 -{trail:.0f}% 청산 ({now})"})
+            msg = (f"🚨 <b>{CFG['symbol']} 고점 대비 -{trail:.0f}% 전량 청산 후 정지</b>\n"
+                   f"📈 고점: {peak:,.4f} → 현재가: {price:,.4f} ({(price/peak-1)*100:.1f}%)\n"
+                   f"💵 체결가: {fp:,.4f} USDT\n📦 청산 수량: {aq:.6f}개\n"
+                   f"💸 직전 기준가 대비 손익(수수료 제외): {pnl:+,.2f} USDT\n{detail}\n"
+                   f"봇은 정지되었습니다. 재개: python coin_grid_irys_monitor.py --resume")
+            print(f"  🚨 청산 완료: {detail}")
+            if send and have > 0:
+                _record("sell", now, price, "고점청산")
+        else:
+            msg = None if state.get("trail_fail_notified") else f"❌ <b>{CFG['symbol']} 고점 청산 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
+            state["trail_fail_notified"] = True
+            print(f"  ❌ 청산 실패: {detail}")
+        if send:
+            save_state(state)
+        if msg:
+            if send:
+                send_discord(msg); print("\n  ✅ 알림 발송")
+            else:
+                print("\n  [--check, 발송 생략]\n  " + msg.replace("<b>","").replace("</b>",""))
+        return
 
     msg = None
     if state.get("mode") != "short" and state.get("stop_active") and price >= state.get("stop_origin", float("inf")):
@@ -712,6 +762,18 @@ if __name__ == "__main__":
         find_symbol(kw)
         sys.exit(0)
 
+    if "--resume" in args:
+        st = load_state()
+        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified"):
+            st.pop(k, None)
+        px = fetch_price(CFG["symbol"])
+        if px > 0:
+            st["reference_price"] = px
+            st["peak_price"] = px
+        save_state(st)
+        print(f"  ✅ 정지 해제 — 기준가·고점을 현재가 {px:,.4f}로 재설정 (봇 보유 수량 {st.get('qty', 0):.4f}개 유지)")
+        sys.exit(0)
+
     if "--reset" in args:
         if os.path.exists(CFG["state_file"]):
             os.remove(CFG["state_file"])
@@ -725,6 +787,9 @@ if __name__ == "__main__":
         else:
             print(f"  모드: {'숏' if st.get('mode') == 'short' else '롱'}")
             print(f"  기준가: {st['reference_price']:,.4f}")
+            if st.get("peak_price"):
+                print(f"  고점: {st['peak_price']:,.4f}  (청산선 {st['peak_price']*(1-CFG['trail_exit_pct']/100):,.4f})"
+                      f"{'  ⏸️ 정지: ' + st.get('halted_reason','') if st.get('halted') else ''}")
             print(f"  레버리지: {CFG['leverage']}배")
             print(f"  보유 수량: {st.get('qty',0):.4f}")
             print(f"  누적 증거금: {st.get('holdings_usdt',0):.0f} / {CFG['max_total_usdt']:.0f} USDT")
