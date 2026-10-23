@@ -24,6 +24,7 @@ BOTS = {
     "TQQQ": {"ledger": "tqqq_ledger.csv", "leverage": 1, "margin": 10.0},
     "PLTR": {"ledger": "pltr_ledger.csv", "leverage": 1, "margin": 10.0},
     "IRYS": {"ledger": "irys_ledger.csv", "leverage": 1, "margin": 10.0},
+    "BIRB": {"ledger": "birb_ledger.csv", "leverage": 1, "margin": 10.0},
 }
 
 FIELDS = ["buy_time", "buy_price", "sell_time", "sell_price", "note"]
@@ -151,13 +152,15 @@ def rebuild_excel():
     ws_tqqq = wb.create_sheet("TQQQ 거래이력")
     ws_pltr = wb.create_sheet("PLTR 거래이력")
     ws_irys = wb.create_sheet("IRYS 거래이력")
+    ws_birb = wb.create_sheet("BIRB 거래이력")
     ws_sum = wb.create_sheet("요약")
 
     btc_realized = _write_sheet(ws_btc, "BTC")
     tqqq_realized = _write_sheet(ws_tqqq, "TQQQ")
     pltr_realized = _write_sheet(ws_pltr, "PLTR")
     irys_realized = _write_sheet(ws_irys, "IRYS")
-    total_realized = btc_realized + tqqq_realized + pltr_realized + irys_realized
+    birb_realized = _write_sheet(ws_birb, "BIRB")
+    total_realized = btc_realized + tqqq_realized + pltr_realized + irys_realized + birb_realized
 
     def _closed_count(bot):
         return sum(1 for r in _load_rows(_ledger_path(bot)) if r.get("sell_time"))
@@ -176,6 +179,9 @@ def rebuild_excel():
         ("", ""),
         ("IRYS 완료거래 수", _closed_count("IRYS")),
         ("IRYS 실현손익(USDT)", round(irys_realized, 3)),
+        ("", ""),
+        ("BIRB 완료거래 수", _closed_count("BIRB")),
+        ("BIRB 실현손익(USDT)", round(birb_realized, 3)),
         ("", ""),
         ("전체 실현손익 합계(USDT)", round(total_realized, 3)),
         ("전체 실현 누적수익률(%)", round(total_realized / SEED_TOTAL * 100, 4)),
