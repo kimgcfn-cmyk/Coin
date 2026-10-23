@@ -186,9 +186,17 @@ def fill_from_order(o: dict) -> dict:
             except (TypeError, ValueError):
                 pass
         return None
+    fee = None
+    try:   # 실제 체결 수수료(USDT) — feeDetail 합계. 없으면 None(누적 손익 계산에서 기본 요율 사용)
+        fd = inf.get("feeDetail") or []
+        if fd:
+            fee = sum(abs(float(x.get("fee") or 0)) for x in fd if (x.get("feeCoin") or "USDT") == "USDT")
+    except (TypeError, ValueError):
+        fee = None
     return {"filled": num(o.get("filled"), inf.get("cumExecQty")),
             "average": num(o.get("average"), inf.get("avgPrice")),
-            "cost": num(o.get("cost"), inf.get("cumExecValue"))}
+            "cost": num(o.get("cost"), inf.get("cumExecValue")),
+            "fee_usdt": fee}
 
 def check_leverage(ex, symbol: str) -> tuple:
     """계정에 설정된 해당 종목 레버리지가 CFG와 같은지 확인. 사용자가 수동 포지션 때문에 바꿔둔
@@ -330,7 +338,8 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
             estimated = True
 
         info = {"cost": actual_cost, "avg_price": actual_avg,
-                "filled_qty": actual_filled, "estimated": estimated}
+                "filled_qty": actual_filled, "estimated": estimated,
+                "fee": order.get("fee_usdt")}
         est_note = " (체결정보 미수신, 요청값 기준 추정)" if estimated else ""
         return True, (f"체결 완료 (주문ID {order.get('id','?')}, "
                       f"금액 {actual_cost:,.2f}USDT, 체결가 {actual_avg:,.2f}, "
@@ -341,24 +350,34 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
 # ══════════════════════════════════════════════════════
 #  누적 손익 (봇 가동 이후, 평균단가 방식, 수수료 제외)
 # ══════════════════════════════════════════════════════
-def _acct_buy(state: dict, qty: float, px: float):
-    """봇 물량의 평균단가 갱신 (매수 체결 직전에 호출 — state['qty']는 아직 이전 값)."""
+FEE_FALLBACK = 0.0006   # 체결 수수료를 못 읽었을 때 쓰는 기본 요율(Bitget USDT 선물 taker 0.06%)
+
+def _fee_of(fee, qty: float, px: float) -> float:
+    return fee if fee is not None else qty * px * FEE_FALLBACK
+
+def _acct_buy(state: dict, qty: float, px: float, fee=None):
+    """봇 물량의 평균단가 갱신 — 매수 수수료는 취득원가에 포함 (매수 체결 직전에 호출, state['qty']는 이전 값)."""
     q0 = state.get("qty", 0.0)
     c0 = state.get("avg_cost") or px
+    fee = _fee_of(fee, qty, px)
     tot = q0 + qty
-    state["avg_cost"] = (q0 * c0 + qty * px) / tot if tot > 0 else px
+    state["avg_cost"] = (q0 * c0 + qty * px + fee) / tot if tot > 0 else px
+    state["cum_fees"] = state.get("cum_fees", 0.0) + fee
 
-def _acct_sell(state: dict, qty: float, px: float):
-    """매도 체결 실현손익을 평균단가 기준으로 누적."""
+def _acct_sell(state: dict, qty: float, px: float, fee=None):
+    """매도 체결 실현손익을 평균단가 기준으로 누적 (매도 수수료 차감)."""
     c0 = state.get("avg_cost") or px
-    state["cum_pnl"] = state.get("cum_pnl", 0.0) + qty * (px - c0)
+    fee = _fee_of(fee, qty, px)
+    state["cum_pnl"] = state.get("cum_pnl", 0.0) + qty * (px - c0) - fee
+    state["cum_fees"] = state.get("cum_fees", 0.0) + fee
 
 def _pnl_footer(state: dict, price: float) -> str:
     realized = state.get("cum_pnl", 0.0)
     qty = state.get("qty", 0.0)
     unreal = qty * (price - (state.get("avg_cost") or price)) if qty > 0 else 0.0
-    return (f"\n\n📊 <b>누적 수익 (봇 가동 이후, 수수료 제외)</b>\n"
-            f"실현 {realized:+,.2f} USDT | 보유 평가 {unreal:+,.2f} USDT | 합계 {realized + unreal:+,.2f} USDT")
+    return (f"\n\n📊 <b>누적 수익 (봇 가동 이후, 수수료 반영)</b>\n"
+            f"실현 {realized:+,.2f} USDT | 보유 평가 {unreal:+,.2f} USDT | 합계 {realized + unreal:+,.2f} USDT\n"
+            f"(누적 수수료 {state.get('cum_fees', 0.0):,.2f} USDT 포함)")
 
 # ══════════════════════════════════════════════════════
 #  그리드 로직
@@ -439,7 +458,7 @@ def run_check(send: bool = True):
             fp = info.get("avg_price", price)
             ref_before = state.get("reference_price") or price
             if aq > 0:
-                _acct_sell(state, aq, fp)
+                _acct_sell(state, aq, fp, info.get("fee"))
             pnl = aq * (fp - ref_before)
             state.update({"qty": max(0.0, have - aq), "holdings_usdt": 0.0, "halted": True,
                           "halted_reason": f"고점 {peak:,.4f} 대비 -{trail:.0f}% 청산 ({now})"})
@@ -495,7 +514,7 @@ def run_check(send: bool = True):
                                              reduce_only=False, dry_run=not send)
         if ok:
             actual_qty = info.get("filled_qty", qty)
-            _acct_buy(state, actual_qty, info.get("avg_price", price))
+            _acct_buy(state, actual_qty, info.get("avg_price", price), info.get("fee"))
             state["qty"] = state.get("qty", 0.0) + actual_qty
             state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["order_usdt"]
             state["reference_price"] = price   # 래칫: 기준가를 더 아래로
@@ -529,7 +548,7 @@ def run_check(send: bool = True):
                                              qty_override=qty_to_sell if sell_all else None)
         if ok:
             actual_qty = info.get("filled_qty", qty_to_sell)
-            _acct_sell(state, actual_qty, info.get("avg_price", price))
+            _acct_sell(state, actual_qty, info.get("avg_price", price), info.get("fee"))
             ref_before = state.get("reference_price") or price   # 이번 매도의 기준(직전 기준가)
             state["qty"] = max(0.0, state.get("qty", 0.0) - actual_qty)
             state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG["order_usdt"])
@@ -569,7 +588,7 @@ def run_check(send: bool = True):
                                              qty_override=qty_to_sell)
         if ok:
             actual_qty = info.get("filled_qty", qty_to_sell)
-            _acct_sell(state, actual_qty, info.get("avg_price", price))
+            _acct_sell(state, actual_qty, info.get("avg_price", price), info.get("fee"))
             ref_before = state.get("reference_price") or price
             if first:
                 state["stop_active"] = True
