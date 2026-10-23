@@ -339,6 +339,28 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
         return False, f"주문 실패: {e}", 0, {}
 
 # ══════════════════════════════════════════════════════
+#  누적 손익 (봇 가동 이후, 평균단가 방식, 수수료 제외)
+# ══════════════════════════════════════════════════════
+def _acct_buy(state: dict, qty: float, px: float):
+    """봇 물량의 평균단가 갱신 (매수 체결 직전에 호출 — state['qty']는 아직 이전 값)."""
+    q0 = state.get("qty", 0.0)
+    c0 = state.get("avg_cost") or px
+    tot = q0 + qty
+    state["avg_cost"] = (q0 * c0 + qty * px) / tot if tot > 0 else px
+
+def _acct_sell(state: dict, qty: float, px: float):
+    """매도 체결 실현손익을 평균단가 기준으로 누적."""
+    c0 = state.get("avg_cost") or px
+    state["cum_pnl"] = state.get("cum_pnl", 0.0) + qty * (px - c0)
+
+def _pnl_footer(state: dict, price: float) -> str:
+    realized = state.get("cum_pnl", 0.0)
+    qty = state.get("qty", 0.0)
+    unreal = qty * (price - (state.get("avg_cost") or price)) if qty > 0 else 0.0
+    return (f"\n\n📊 <b>누적 수익 (봇 가동 이후, 수수료 제외)</b>\n"
+            f"실현 {realized:+,.2f} USDT | 보유 평가 {unreal:+,.2f} USDT | 합계 {realized + unreal:+,.2f} USDT")
+
+# ══════════════════════════════════════════════════════
 #  그리드 로직
 # ══════════════════════════════════════════════════════
 def check_grid(state: dict, price: float) -> dict:
@@ -416,6 +438,8 @@ def run_check(send: bool = True):
             aq = info.get("filled_qty", have) if have > 0 else 0.0
             fp = info.get("avg_price", price)
             ref_before = state.get("reference_price") or price
+            if aq > 0:
+                _acct_sell(state, aq, fp)
             pnl = aq * (fp - ref_before)
             state.update({"qty": max(0.0, have - aq), "holdings_usdt": 0.0, "halted": True,
                           "halted_reason": f"고점 {peak:,.4f} 대비 -{trail:.0f}% 청산 ({now})"})
@@ -424,6 +448,7 @@ def run_check(send: bool = True):
                    f"💵 체결가: {fp:,.4f} USDT\n📦 청산 수량: {aq:.6f}개\n"
                    f"💸 직전 기준가 대비 손익(수수료 제외): {pnl:+,.2f} USDT\n{detail}\n"
                    f"봇은 정지되었습니다. 재개: python coin_grid_birb_monitor.py --resume")
+            msg += _pnl_footer(state, price)
             print(f"  🚨 청산 완료: {detail}")
             if send and have > 0:
                 _record("sell", now, price, "고점청산")
@@ -470,6 +495,7 @@ def run_check(send: bool = True):
                                              reduce_only=False, dry_run=not send)
         if ok:
             actual_qty = info.get("filled_qty", qty)
+            _acct_buy(state, actual_qty, info.get("avg_price", price))
             state["qty"] = state.get("qty", 0.0) + actual_qty
             state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["order_usdt"]
             state["reference_price"] = price   # 래칫: 기준가를 더 아래로
@@ -503,6 +529,7 @@ def run_check(send: bool = True):
                                              qty_override=qty_to_sell if sell_all else None)
         if ok:
             actual_qty = info.get("filled_qty", qty_to_sell)
+            _acct_sell(state, actual_qty, info.get("avg_price", price))
             ref_before = state.get("reference_price") or price   # 이번 매도의 기준(직전 기준가)
             state["qty"] = max(0.0, state.get("qty", 0.0) - actual_qty)
             state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG["order_usdt"])
@@ -542,6 +569,7 @@ def run_check(send: bool = True):
                                              qty_override=qty_to_sell)
         if ok:
             actual_qty = info.get("filled_qty", qty_to_sell)
+            _acct_sell(state, actual_qty, info.get("avg_price", price))
             ref_before = state.get("reference_price") or price
             if first:
                 state["stop_active"] = True
@@ -595,6 +623,9 @@ def run_check(send: bool = True):
         save_state(state)
     else:
         print("  (--check 모드: 상태 저장 생략)")
+
+    if msg and action in ("buy", "sell", "stop_loss") and not msg.startswith("❌"):
+        msg += _pnl_footer(state, price)
 
     if msg:
         if send:
