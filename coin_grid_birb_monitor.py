@@ -27,7 +27,11 @@ coin_grid_irys_monitor.py(IRYS)를 그대로 따른 BIRB용 봇 (2026-10-23).
   급등 이벤트 42건 24시간 모의(수수료·슬리피지 반영): 손익비 0.37 → 0.45, 거래 승률 75% → 70%, 이벤트당 평균 -0.08 → -0.48 USDT.
   손익비는 좋아졌지만 승률 하락이 더 커서 평균은 나빠지는 쪽이었다(표본 42건이라 통계적 구분은 어렵다). 설정으로 되돌리려면 sell_step_pct=1.0.
 
-[고점 청산 — 2026-10-23 추가, 급등탐지 종목용]
+[고점 청산 → 신규 매수 중단 — 2026-10-24 변경]
+  trail_action="pause_buy": 고점 대비 -N%에 닿으면 전량 청산하지 않고 신규 매수만 멈춘다. 보유분은 기준가(가격을 따라 내려감) +sell_step%에서 팔고,
+  보유분이 모두 팔리면 기준가·고점을 현재가로 새로 잡아 자동으로 매수를 재개한다. (이전 방식은 trail_action="liquidate")
+
+[고점 청산 — 2026-10-23 추가, 급등탐지 종목용 — 현재는 위 pause_buy로 대체]
   급등한 종목은 더 오른 뒤 24시간 안에 급락하는 경우가 많아서, 봇이 시작된 뒤의 최고가(peak_price)를 기록해 두고
   현재가가 고점 대비 -12%(trail_exit_pct) 이하로 내려가면 봇이 가진 물량(state의 qty)을 전량 시장가(reduce-only)로 청산하고
   봇을 정지(halted)한다. 사용자의 다른 수동 물량은 건드리지 않는다. 정지 뒤 다시 시작하려면 --resume.
@@ -121,6 +125,7 @@ CFG = {
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
     "guard_leverage"  : False,             # 계정 BIRB 레버리지가 달라도 주문 보류하지 않음
     "trail_exit_pct"  : 15.0,              # 고점 대비 -15% 하락 시 봇 물량 전량 청산 후 정지 (BIRB는 2026-10-24 -12%→-15%로 넓힘; 급등 이벤트 모의에서 -15%가 평균 최고)
+    "trail_action"    : "pause_buy",       # 고점 하락 시 동작: "pause_buy"=신규 매수 중단+보유분만 매도(물량 0이면 자동 재개), "liquidate"=전량 청산 후 정지 (2026-10-24 pause_buy로 변경)
     "stop_loss"       : False,             # 2026-10-23 끔 — 고점 청산으로 대체 (켜면 단계 손절+숏 모드 동작, 아래 설명)
     "stop_loss_frac"  : 0.10,              # 손절 시작 시점 보유 수량의 10%씩 (매번 같은 수량)
     "auto_trade"      : True,              # 2026-10-23 실전 가동 (계정 레버리지 1배로 맞춘 뒤)
@@ -408,6 +413,8 @@ def check_grid(state: dict, price: float) -> dict:
     rise_trigger = ref * (1 + CFG.get("sell_step_pct", CFG["step_pct"]) / 100)
 
     if price <= drop_trigger:
+        if state.get("buy_paused"):
+            return {"action": None, "reason": f"신규 매수 중단 중({state.get('buy_paused_reason', '')}) — 보유분만 매도 감시 (기준가 {ref:,.4f}, 매도트리거 {rise_trigger:,.4f})"}
         invested = state.get("holdings_usdt", 0.0)
         if CFG.get("stop_loss") and (state.get("stop_active") or invested >= CFG["max_total_usdt"]):
             if state.get("qty", 0.0) <= 0:
@@ -454,10 +461,40 @@ def run_check(send: bool = True):
         print(f"  ⏸️ 봇 정지 상태 ({state.get('halted_reason', '')}) — 재개하려면 --resume")
         return
 
-    # 고점 추적 + 고점 대비 하락 시 전량 청산
-    state["peak_price"] = max(state.get("peak_price") or price, price)
+    # 고점 추적 + 고점 대비 하락 시 처리 (trail_action)
     trail = CFG.get("trail_exit_pct")
-    if trail and price <= state["peak_price"] * (1 - trail / 100):
+    trail_mode = CFG.get("trail_action", "liquidate")
+    if trail_mode == "pause_buy":
+        note_msg = None
+        if state.get("buy_paused"):
+            # 신규 매수 중단 중: 기준가를 가격 아래로 따라 내려서(반등 +% 때 보유분을 팔도록) 하고, 물량이 0이 되면 재개
+            if price < (state.get("reference_price") or price):
+                state["reference_price"] = price
+            if state.get("qty", 0.0) <= 0:
+                for k in ("buy_paused", "buy_paused_reason"):
+                    state.pop(k, None)
+                state["peak_price"] = price
+                state["reference_price"] = price
+                note_msg = (f"▶️ <b>{CFG['symbol']} 신규 매수 재개</b>\n보유분을 모두 팔았습니다. 기준가·고점을 현재가 {price:,.4f}로 새로 잡고 매수를 다시 시작합니다.")
+                print("  ▶️ 보유분 모두 매도 — 신규 매수 재개")
+        else:
+            if state.get("qty", 0.0) <= 0:
+                state["peak_price"] = price          # 물량이 없으면 고점도 현재가로 새로 시작
+            else:
+                state["peak_price"] = max(state.get("peak_price") or price, price)
+            if trail and state.get("qty", 0.0) > 0 and price <= state["peak_price"] * (1 - trail / 100):
+                peak = state["peak_price"]
+                state["buy_paused"] = True
+                state["buy_paused_reason"] = f"고점 {peak:,.4f} 대비 {(price/peak-1)*100:.1f}% ({now})"
+                note_msg = (f"⏸️ <b>{CFG['symbol']} 신규 매수 중단</b> (고점 대비 {(price/peak-1)*100:.1f}%)\n"
+                            f"📈 고점 {peak:,.4f} → 현재가 {price:,.4f}\n📦 보유분 {state.get('qty', 0.0):.4f}개만 매도 감시 (기준가는 가격을 따라 내려갑니다)\n"
+                            f"보유분이 모두 팔리면 자동으로 매수를 재개합니다.")
+                print(f"  ⏸️ 고점 대비 {(price/peak-1)*100:.1f}% — 신규 매수 중단, 보유분만 매도")
+        if note_msg and send:
+            send_discord(note_msg)
+    else:
+        state["peak_price"] = max(state.get("peak_price") or price, price)
+    if trail_mode == "liquidate" and trail and price <= state["peak_price"] * (1 - trail / 100):
         have = state.get("qty", 0.0)
         peak = state["peak_price"]
         print(f"  🚨 고점 {peak:,.4f} 대비 {(price/peak-1)*100:.1f}% — 전량 청산 조건 ({trail:.0f}%)")
@@ -820,7 +857,7 @@ if __name__ == "__main__":
 
     if "--resume" in args:
         st = load_state()
-        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified"):
+        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason"):
             st.pop(k, None)
         px = fetch_price(CFG["symbol"])
         if px > 0:
@@ -844,7 +881,8 @@ if __name__ == "__main__":
             print(f"  모드: {'숏' if st.get('mode') == 'short' else '롱'}")
             print(f"  기준가: {st['reference_price']:,.4f}")
             if st.get("peak_price"):
-                print(f"  고점: {st['peak_price']:,.4f}  (청산선 {st['peak_price']*(1-CFG['trail_exit_pct']/100):,.4f})"
+                print(f"  고점: {st['peak_price']:,.4f}  ({'매수중단선' if CFG.get('trail_action') == 'pause_buy' else '청산선'} {st['peak_price']*(1-CFG['trail_exit_pct']/100):,.4f})"
+                      f"{'  ⏸️ 신규 매수 중단: ' + st.get('buy_paused_reason', '') if st.get('buy_paused') else ''}"
                       f"{'  ⏸️ 정지: ' + st.get('halted_reason','') if st.get('halted') else ''}")
             print(f"  레버리지: {CFG['leverage']}배")
             print(f"  보유 수량: {st.get('qty',0):.4f}")
