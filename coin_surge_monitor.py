@@ -11,11 +11,14 @@ Bitget USDT-M 선물 전 종목을 주기적으로 훑어서, 단기간에 가�
        5분 +5% 이상이면 후보
      (24시간 거래대금이 min_vol_usdt 미만인 종목, exclude 종목은 제외)
   2단계 (후보만): 5분봉을 받아 거래량 배율을 확인한다.
-       최근 3개 마감봉 평균 거래대금 / 그 직전 20개 마감봉 평균 >= 5배
+       (a) 최근 3개 마감봉 평균 거래대금 / 그 직전 20개 마감봉 평균 >= 5배
+       (b) 최근 3개 마감봉 평균 거래대금 / 24시간 평균(5분당) >= 3배
      → 가격 급등 + 거래량 동반일 때만 알림 (거래량 없는 호가 장난 걸러냄)
+     (b)는 최근 100분이 유독 한산했던 코인이 평소 수준의 거래만으로 배수가 커지는 경우를 거른다.
+     24시간 평균 = 티커의 24시간 거래대금 ÷ 288 (현재 급등분이 포함되어 약간 높게 잡힘)
 
 [알림 내용]
-  현재가 · 5분 상승률 · 거래량 배수 · 24시간 등락/거래대금/펀딩비
+  현재가 · 5분 상승률 · 거래량 배수(100분 대비/24시간 평균 대비) · 24시간 등락/거래대금/펀딩비
   (메시지 레이아웃만 기존 급등 알림과 같고, 방향/손절/목표 같은 매매 규칙은 넣지 않는다)
   12시간마다 '스캔 진행중' 생존 알림을 보낸다 (heartbeat_hours, 0이면 끔)
 
@@ -71,7 +74,8 @@ CFG = {
     "candle_gran"      : "5m",
     "vol_recent_bars"  : 3,                           # 최근 N개 마감봉 평균
     "vol_base_bars"    : 20,                          # 그 직전 N개 마감봉 평균과 비교
-    "min_vol_ratio"    : 5.0,                         # 거래량 배율 하한
+    "min_vol_ratio"    : 5.0,                         # 거래량 배율 하한 (직전 100분 평균 대비)
+    "min_vol_ratio_24h": 3.0,                         # 거래량 배율 하한 (24시간 평균 대비, 2026-10-23 최근 알림 10건 기준 3배 시 6건 통과)
     "max_candidates"   : 20,                          # 2단계 확인 최대 개수
     "max_alerts"       : 5,                           # 1회 실행당 최대 알림 수
     "cooldown_min"     : 60,                          # 같은 종목 재알림 금지 시간
@@ -240,6 +244,15 @@ def volume_ratio(rows: list):
     b_avg = sum(c[6] for c in base) / n_base
     return r_avg / b_avg if b_avg > 0 else None
 
+def volume_ratio_24h(rows: list, vol24: float):
+    """최근 3개 마감봉 평균 거래대금 / 24시간 평균(5분당 = 24시간 거래대금 / 288). 계산 불가면 None."""
+    closed = rows[:-1]
+    n = CFG["vol_recent_bars"]
+    if len(closed) < n or vol24 <= 0:
+        return None
+    recent_avg = sum(c[6] for c in closed[-n:]) / n
+    return recent_avg / (vol24 / 288)
+
 def in_cooldown(state: dict, sym: str, price: float, now: int) -> bool:
     a = state.get("alerted", {}).get(sym)
     if not a:
@@ -269,7 +282,7 @@ def fmt_window(m: int) -> str:
 def kst_now() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S KST")
 
-def build_message(c: dict, ratio: float) -> str:
+def build_message(c: dict, ratio: float, ratio24: float) -> str:
     moves = " / ".join(f"{fmt_window(m)} {v:+.1f}%"
                        for m, v in c["changes"].items() if v is not None)
     sep = "━━━━━━━━━━━━━━━━━━━"
@@ -278,7 +291,7 @@ def build_message(c: dict, ratio: float) -> str:
             f"{sep}\n"
             f"현재가: {fmt_price(c['price'])}\n"
             f"상승률: {moves}\n"
-            f"거래량 배수: {ratio:.1f}x\n"
+            f"거래량 배수: 직전 100분 대비 {ratio:.1f}x / 24시간 평균 대비 {ratio24:.1f}x\n"
             f"24시간 {c['chg24']:+.1f}% · 거래대금 {fmt_big(c['vol'])} USDT · 펀딩 {c['funding']:+.4f}%\n"
             f"{sep}\n"
             f"⚠️ 알림 전용 — 자동 주문 없음 (이미 오른 뒤 감지된 신호입니다)\n"
@@ -288,7 +301,7 @@ def build_heartbeat() -> str:
     conds = " / ".join(f"{fmt_window(m)} {t:.1f}%↑" for m, t in CFG["windows"])
     return (f"🔍 <b>스캔 진행중</b>\n"
             f"{kst_now()}\n"
-            f"조건: {conds} & 거래량 {CFG['min_vol_ratio']}x↑\n"
+            f"조건: {conds} & 거래량 {CFG['min_vol_ratio']}x↑(100분 대비) / {CFG['min_vol_ratio_24h']}x↑(24시간 평균 대비)\n"
             f"({CFG['heartbeat_hours']}시간 간격으로 알립니다)")
 
 # ══════════════════════════════════════════════════════
@@ -341,15 +354,20 @@ def run_check(send: bool = True):
             print(f"  ⏸ {sym}: 후보 ({mv}) — 쿨다운 중")
             continue
         checked += 1
-        ratio = volume_ratio(fetch_candles(sym))
+        rows = fetch_candles(sym)
+        ratio = volume_ratio(rows)
+        ratio24 = volume_ratio_24h(rows, c["vol"])
         time.sleep(0.15)
         if ratio is None:
             print(f"  ⚪ {sym}: 후보 ({mv}) — 캔들 부족, 거래량 확인 불가")
         elif ratio < CFG["min_vol_ratio"]:
             print(f"  ⚪ {sym}: 후보 ({mv}) — 거래량 ×{ratio:.1f} < ×{CFG['min_vol_ratio']} (제외)")
+        elif ratio24 is None or ratio24 < CFG["min_vol_ratio_24h"]:
+            r24 = "계산 불가" if ratio24 is None else f"×{ratio24:.1f}"
+            print(f"  ⚪ {sym}: 후보 ({mv}) — 100분 대비 ×{ratio:.1f} 통과, 24시간 평균 대비 {r24} < ×{CFG['min_vol_ratio_24h']} (제외)")
         else:
-            print(f"  🚀 {sym}: 급등 확정 ({mv}, 거래량 ×{ratio:.1f})")
-            alerts.append((c, ratio))
+            print(f"  🚀 {sym}: 급등 확정 ({mv}, 거래량 100분 대비 ×{ratio:.1f} / 24시간 평균 대비 ×{ratio24:.1f})")
+            alerts.append((c, ratio, ratio24))
             state.setdefault("alerted", {})[sym] = {"ts": now, "price": c["price"]}
 
     # 24시간 지난 알림 기록 정리
@@ -364,8 +382,8 @@ def run_check(send: bool = True):
     if not alerts:
         print("\n  알림 없음")
         return
-    for c, ratio in alerts:
-        msg = build_message(c, ratio)
+    for c, ratio, ratio24 in alerts:
+        msg = build_message(c, ratio, ratio24)
         if send:
             send_discord(msg)
             time.sleep(0.5)
