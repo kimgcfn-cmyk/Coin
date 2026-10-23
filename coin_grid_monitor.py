@@ -82,8 +82,8 @@ def _record(side: str, time_str: str, price: float, note: str = ""):
 CFG = {
     "symbol"          : "TQQQ/USDT:USDT",  # ⚠️ --find-symbol 로 정확한 형식 먼저 확인할 것
     "step_pct"        : 3.0,               # 그리드 간격 3% (2026-09-05: 5%→3%, 매매 빈도 증대)
-    "order_usdt"      : 30.0,              # 1회 매수/매도 금액 (2026-09-05: 10→30, 시드 900 대비 리스크 확대)
-    "max_total_usdt"  : 600.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (안전장치) (2026-09-05: 200→600, order_usdt 30 기준 20회분 유지)
+    "order_usdt"      : 10.0,              # 1회 매수/매도 금액 (2026-10-23: 30→10, 통합계정 전환 후 계좌 규모(약 60 USDT)에 맞춤)
+    "max_total_usdt"  : 200.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (안전장치) (2026-10-23: 600→200, order_usdt 10 기준 20회분 유지)
     "leverage"        : 1,                 # 1배(레버리지 없음) — TQQQ 자체가 이미 +3배 상품이라
                                             # 거래소 레버리지는 추가하지 않음(중첩 위험 방지)
     "auto_trade"      : True,             # ⚠️ True로 바꿔야만 실제 주문 실행
@@ -145,18 +145,24 @@ def get_exchange():
         "password": BITGET_PASSPHRASE, "enableRateLimit": True,
     })
 
-_leverage_set = False   # 실행당 1회만 설정 시도 (매번 API 호출 방지)
+UTA = {"uta": True, "productType": "USDT-FUTURES"}   # 통합계정(UTA) API 사용 (2026-10-15 계정 전환, Classic API는 40085)
 
-def ensure_leverage(ex, symbol: str):
-    global _leverage_set
-    if _leverage_set or not CFG["auto_trade"]:
-        return
+def check_leverage(ex, symbol: str) -> tuple:
+    """계정에 설정된 해당 종목 레버리지가 CFG와 같은지 확인. 사용자가 수동 포지션 때문에 바꿔둔
+    경우(같은 종목, 교차 마진) 봇 수량 계산이 어긋나므로 다르면 주문을 보류한다.
+    반환: (통과여부, 메시지)"""
     try:
-        ex.set_leverage(CFG["leverage"], symbol)
-        print(f"  ✅ 레버리지 {CFG['leverage']}배 설정 완료 ({symbol})")
+        r = ex.privateUtaGetV3AccountSettings({})
+        data = r.get("data") or {}
+        sid = symbol.split("/")[0] + "USDT"
+        for c in data.get("symbolConfigList", []):
+            if c.get("symbol") == sid and c.get("category") == "USDT-FUTURES":
+                lev = float(c.get("leverage") or c.get("longLeverage") or 0)
+                if lev and abs(lev - CFG["leverage"]) > 1e-9:
+                    return False, f"계정 레버리지 {lev:g}배 ≠ 설정 {CFG['leverage']}배 — 주문 보류(계정 설정 확인 필요)"
+        return True, ""
     except Exception as e:
-        print(f"  ⚠️ 레버리지 설정 실패(이미 설정돼 있거나 마켓타입 확인 필요): {e}")
-    _leverage_set = True
+        return False, f"레버리지 확인 실패: {e}"
 
 def find_symbol(keyword: str = "TQQQ"):
     """정확한 거래 심볼 형식을 찾는 도구. 최초 1회 반드시 실행 권장."""
@@ -205,6 +211,11 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
      방식으로 자동 세팅해줌)
     계좌가 hedge_mode이므로 hedged=True 고정.
 
+    ⚠️ 2026-10-23: 통합계정(UTA) 주문으로 전환 — Classic 주문 API가 40085로 막힘.
+    UTA 파라미터({"uta": True, "productType": "USDT-FUTURES"})로 주문하고, 주문 직후 fetch_order로
+    실제 체결 수량/가격을 조회해 반환한다(조회 실패 시에만 추정치). 양방향(hedge) 모드라
+    사용자의 수동 숏과 봇의 롱은 별개 포지션이다. 레버리지는 봇이 바꾸지 않고 check_leverage로 확인만 한다.
+
     ⚠️ 2026-09-05: dry_run 인자 추가 — 이전엔 auto_trade만 보고 --check에서도
     실주문이 나가는 사고가 있었다(run_check(send=False)여도 이 함수는
     send를 몰랐음). 이제 dry_run=True(=--check)면 auto_trade와 무관하게
@@ -228,10 +239,32 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
         return False, "거래소 연결 실패", 0, {}
     if qty <= 0:
         return False, "수량 계산 오류(가격 0)", 0, {}
-    ensure_leverage(ex, symbol)
+    ok_lev, lev_msg = check_leverage(ex, symbol)
+    if not ok_lev:
+        return False, lev_msg, 0, {}
     try:
-        order_params = {"hedged": True, "reduceOnly": reduce_only}
+        ex.load_markets()
+        qty = float(ex.amount_to_precision(symbol, qty))   # 거래소 수량 단위로 내림 (기록과 실제 체결을 맞춤)
+        if qty <= 0:
+            return False, "수량이 최소 단위 미만 — 주문 금액을 늘려야 합니다", 0, {}
+        order_params = {"hedged": True, "reduceOnly": reduce_only, **UTA}
         order = ex.create_market_order(symbol, side, qty, params=order_params)
+
+        # 통합계정 주문 응답에는 체결 정보가 없어서, 주문 조회로 실제 체결 수량/가격을 가져온다
+        fill = {}
+        oid = order.get("id")
+        for _ in range(4):
+            if not oid:
+                break
+            try:
+                o = ex.fetch_order(oid, symbol, UTA)
+                if o.get("filled"):
+                    fill = o
+                    break
+            except Exception:
+                pass
+            time.sleep(0.6)
+        order = {**order, **{k: v for k, v in fill.items() if v is not None}} if fill else order
 
         actual_cost = order.get("cost")
         actual_avg = order.get("average") or order.get("price")
