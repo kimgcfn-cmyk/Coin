@@ -29,6 +29,13 @@
     +1% 상승 → 보유 중이면 10USDT어치 매도, 기준가를 그 가격으로 갱신(더 위로 래칫)
   총 매수 누적액이 max_total_usdt 도달 시 → 매수 중단(매도 감시는 계속)
 
+[손절 — 2026-10-23 추가]
+  총 투입 한도(max_total_usdt)까지 매수한 뒤에도 반등 없이 기준가 대비 -1% 더 내려가면 손절을 시작한다.
+  손절이 시작된 시점의 보유 수량을 기준으로 -1% 하락할 때마다 그 수량의 10%씩 시장가(reduce-only)로 매도하고,
+  기준가를 그 가격으로 내린다. 남는 물량이 1회 주문 한 칸(10USDT어치) 미만이 되면 전량 정리한다.
+  손절 중에는 신규 매수를 하지 않으며, 가격이 손절 시작 때의 기준가(마지막 매수가)까지 회복하면 손절 모드를 해제하고
+  일반 그리드로 돌아간다. 손절 중 +1% 반등하면 평소처럼 10USDT씩 매도는 계속된다.
+
 [안전장치]
   - auto_trade 기본값 False (알림만, 실제 주문 없음) — 반드시 --check로
     충분히 확인 후 True로 전환할 것
@@ -97,6 +104,8 @@ CFG = {
     "max_total_usdt"  : 100.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (10회분, 변동성이 커서 보수적으로)
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
     "guard_leverage"  : False,             # 계정 IRYS 레버리지(수동 포지션용 10배)와 달라도 주문 보류하지 않음
+    "stop_loss"       : True,              # 매수 한도 도달 후 계속 하락하면 단계 손절 (아래 [손절] 설명 참고)
+    "stop_loss_frac"  : 0.10,              # 손절 시작 시점 보유 수량의 10%씩 (매번 같은 수량)
     "auto_trade"      : True,              # 2026-10-23 실전 가동 (사전 매수 30 USDT 등록 후)
     "state_file"      : "coin_grid_irys_state.json",
 }
@@ -227,7 +236,8 @@ def fetch_price(symbol: str) -> float:
         return 0.0
 
 def place_order(symbol: str, side: str, margin_usdt: float, price: float,
-                 reduce_only: bool = False, dry_run: bool = False) -> tuple:
+                 reduce_only: bool = False, dry_run: bool = False,
+                 qty_override: float = None) -> tuple:
     """
     실제 시장가 주문. margin_usdt는 투입 증거금이고, 실제 체결 수량은
     레버리지가 곱해진 명목가치(notional) 기준으로 계산된다.
@@ -257,6 +267,9 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
     lev = CFG["leverage"]
     notional = margin_usdt * lev
     qty = notional / price if price > 0 else 0
+    if qty_override is not None:   # 손절처럼 수량을 직접 지정하는 주문
+        qty = qty_override
+        notional = qty * price
     if dry_run:
         info = {"cost": notional, "avg_price": price, "filled_qty": qty, "estimated": True}
         return True, f"--check 모드 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty, info
@@ -338,6 +351,13 @@ def check_grid(state: dict, price: float) -> dict:
 
     if price <= drop_trigger:
         invested = state.get("holdings_usdt", 0.0)
+        if CFG.get("stop_loss") and (state.get("stop_active") or invested >= CFG["max_total_usdt"]):
+            if state.get("qty", 0.0) <= 0:
+                return {"action": None, "reason": "손절 모드 — 정리할 물량 없음, 가격 회복 대기"}
+            return {"action": "stop_loss", "reason":
+                    f"기준가 {ref:,.4f} 대비 -{CFG['step_pct']:.0f}% 추가 하락 — 손절 단계 도달"}
+        if state.get("stop_active"):
+            return {"action": None, "reason": "손절 모드 — 신규 매수 중단"}
         if invested >= CFG["max_total_usdt"]:
             return {"action": "buy_blocked", "reason":
                     f"총 투입한도({CFG['max_total_usdt']:.0f}USDT) 도달 — 매수 중단(안전장치)"}
@@ -372,11 +392,21 @@ def run_check(send: bool = True):
         return
     print(f"  현재가: {price:,.4f} USDT")
 
+    msg = None
+    if state.get("stop_active") and price >= state.get("stop_origin", float("inf")):
+        origin = state.get("stop_origin")
+        for k in ("stop_active", "stop_base_qty", "stop_origin"):
+            state.pop(k, None)
+        state.pop("notified_budget_full", None)
+        if state.get("qty", 0.0) <= 0:
+            state["reference_price"] = price   # 물량을 전부 정리했다면 현재가로 기준가를 새로 잡는다
+        print(f"  ✅ 가격이 손절 시작 기준가 {origin:,.4f}까지 회복 — 손절 모드 해제")
+        msg = (f"✅ <b>{CFG['symbol']} 손절 모드 해제</b>\n"
+               f"가격이 손절 시작 기준가 {origin:,.4f}까지 회복했습니다. 일반 그리드로 복귀합니다.")
+
     result = check_grid(state, price)
     action = result["action"]
     print(f"  {result['reason']}")
-
-    msg = None
 
     if action == "init":
         state["reference_price"] = price
@@ -441,6 +471,47 @@ def run_check(send: bool = True):
         else:
             msg = f"❌ <b>{CFG['symbol']} 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
             print(f"  ❌ 매도 실패: {detail}")
+
+    elif action == "stop_loss":
+        first = not state.get("stop_active")
+        base_qty = state["qty"] if first else state.get("stop_base_qty", state["qty"])
+        have = state.get("qty", 0.0)
+        qty_to_sell = min(base_qty * CFG["stop_loss_frac"], have)
+        if have - qty_to_sell < (CFG["order_usdt"] * CFG["leverage"]) / price:   # 남는 게 한 칸 미만이면 전량
+            qty_to_sell = have
+        ok, detail, qty, info = place_order(CFG["symbol"], "sell", 0, price,
+                                             reduce_only=True, dry_run=not send,
+                                             qty_override=qty_to_sell)
+        if ok:
+            actual_qty = info.get("filled_qty", qty_to_sell)
+            ref_before = state.get("reference_price") or price
+            if first:
+                state["stop_active"] = True
+                state["stop_base_qty"] = base_qty
+                state["stop_origin"] = ref_before
+            frac_left = max(0.0, have - actual_qty) / have if have > 0 else 0.0
+            state["qty"] = max(0.0, have - actual_qty)
+            state["holdings_usdt"] = state.get("holdings_usdt", 0.0) * frac_left
+            state["reference_price"] = price   # 래칫: 기준가를 더 아래로
+            fill_price = info.get("avg_price", price)
+            leg_ret = (fill_price - ref_before) / ref_before * 100
+            leg_profit = actual_qty * (fill_price - ref_before)
+            est_note = " (추정치)" if info.get("estimated") else ""
+            msg = (f"🛑 <b>{CFG['symbol']} 손절 매도</b> ({'손절 시작' if first else '손절 진행'}, "
+                   f"시작 수량의 {CFG['stop_loss_frac']*100:.0f}%)\n"
+                   f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
+                   f"💵 체결가: {fill_price:,.4f} USDT\n"
+                   f"📦 수량: {info.get('filled_qty', qty_to_sell):.6f}개\n"
+                   f"📊 직전 기준가 대비: {leg_ret:+.2f}%\n"
+                   f"💸 손익(직전 기준가 대비, 수수료 제외): {leg_profit:+,.2f} USDT\n"
+                   f"남은 봇 물량: {state['qty']:.0f}개 (약 {state['qty']*price:,.1f} USDT)\n"
+                   f"{detail}")
+            print(f"  🛑 손절 체결: {detail}")
+            if send:
+                _record("sell", now, price, "손절")
+        else:
+            msg = f"❌ <b>{CFG['symbol']} 손절 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
+            print(f"  ❌ 손절 실패: {detail}")
 
     elif action == "buy_blocked":
         print(f"  ⚠️ {result['reason']}")
