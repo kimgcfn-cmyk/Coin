@@ -149,21 +149,25 @@ def get_exchange():
         "password": BITGET_PASSPHRASE, "enableRateLimit": True,
     })
 
-_leverage_set = set()   # 심볼별로 실행당 1회만 레버리지 설정 시도
+UTA = {"uta": True, "productType": "USDT-FUTURES"}   # 통합계정(UTA) API 사용 (2026-10-15 계정 전환, Classic API는 40085)
 
-def ensure_leverage(ex, symbol: str):
-    if symbol in _leverage_set or not CFG["auto_trade"]:
-        return
-    try:
-        if not ex.markets:
-            ex.load_markets()
-        market = ex.market(symbol)
-        margin_coin = market.get("settleId") or market.get("settle") or "USDT"
-        ex.set_leverage(CFG["leverage"], symbol, params={"marginCoin": margin_coin})
-        print(f"  ✅ 레버리지 {CFG['leverage']}배 설정 완료 ({symbol})")
-    except Exception as e:
-        print(f"  ⚠️ 레버리지 설정 실패(이미 설정돼 있거나 확인 필요): {e}")
-    _leverage_set.add(symbol)
+def fill_from_order(o: dict) -> dict:
+    """fetch_order 결과에서 실제 체결 수량/평균가/체결금액을 뽑는다.
+    통합계정 응답은 ccxt가 average/cost를 못 채우는 경우가 있어 원본(info)의
+    cumExecQty / avgPrice / cumExecValue를 직접 읽는다. 값이 없으면 해당 항목은 None."""
+    inf = o.get("info") or {}
+    def num(*vals):
+        for v in vals:
+            try:
+                f = float(v)
+                if f > 0:
+                    return f
+            except (TypeError, ValueError):
+                pass
+        return None
+    return {"filled": num(o.get("filled"), inf.get("cumExecQty")),
+            "average": num(o.get("average"), inf.get("avgPrice")),
+            "cost": num(o.get("cost"), inf.get("cumExecValue"))}
 
 def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce_only: bool = False, qty_override: float = None) -> tuple:
     """
@@ -174,6 +178,12 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce
     (2026-08-21 coin_grid_monitor.py에서 ccxt bitget.py 소스코드 직접
      확인해 검증된 방식 — holdSide 직접 지정은 무시되고, hedged=True를
      주면 ccxt가 side/reduceOnly를 보고 posSide를 자동 계산해줌)
+
+    ⚠️ 2026-10-23: 통합계정(UTA) 주문으로 전환 — Classic 주문 API가 40085로 막힘.
+    UTA 파라미터로 주문하고, 주문 직후 fetch_order로 실제 체결 수량/가격을 조회해 반환한다
+    (조회 실패 시에만 추정치). 수량은 거래소 단위(0.0001 BTC)로 내려서 주문하므로
+    설정 금액보다 최대 약 0.0001 BTC(≈8 USDT)까지 작게 체결될 수 있다.
+    레버리지는 봇이 바꾸지 않는다(교차 마진에서 노출은 수량으로 정해지고, 계정 레버리지는 증거금 사용량에만 영향).
 
     반환: (성공여부, 메시지, 체결수량, 체결정보dict)
       체결정보dict: {"cost": 실제체결금액USDT, "avg_price": 체결평균가,
@@ -193,14 +203,32 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float, reduce
         return False, "거래소 연결 실패", 0, {}
     if qty <= 0:
         return False, "수량 계산 오류(가격 0)", 0, {}
-    ensure_leverage(ex, symbol)
     try:
-        order_params = {"hedged": True, "reduceOnly": reduce_only}
-        # Bitget 선물 시장가 매수는 총비용(amount*price) 계산을 위해
-        # price 인자가 필요함 (ccxt 오류 메시지로 확인된 사양)
+        ex.load_markets()
+        qty = float(ex.amount_to_precision(symbol, qty))   # 거래소 수량 단위(BTC 0.0001)로 내림 — 기록과 실제 체결을 맞춤
+        if qty <= 0:
+            return False, "수량이 최소 주문 단위(0.0001 BTC) 미만 — 주문 금액을 늘려야 합니다", 0, {}
+        order_params = {"hedged": True, "reduceOnly": reduce_only, **UTA}
         order = ex.create_market_order(symbol, side, qty, price, params=order_params)
 
-        # 실제 체결 정보 추출 시도 (시장가 주문 직후엔 비어있을 수 있어 추정치로 폴백)
+        # 통합계정 주문 응답에는 체결 정보가 없어서, 주문 조회로 실제 체결 수량/가격을 가져온다
+        fill = {}
+        oid = order.get("id")
+        for _ in range(4):
+            if not oid:
+                break
+            try:
+                f = fill_from_order(ex.fetch_order(oid, symbol, UTA))
+                if f["filled"]:
+                    fill = f
+                    break
+            except Exception:
+                pass
+            time.sleep(0.6)
+        if fill:
+            order = {**order, **{k: v for k, v in fill.items() if v is not None}}
+
+        # 실제 체결 정보 추출 (조회 실패 시에만 추정치로 폴백)
         actual_cost = order.get("cost")
         actual_avg = order.get("average") or order.get("price")
         actual_filled = order.get("filled") or order.get("amount")

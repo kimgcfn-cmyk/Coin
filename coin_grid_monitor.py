@@ -257,9 +257,10 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
         return False, "거래소 연결 실패", 0, {}
     if qty <= 0:
         return False, "수량 계산 오류(가격 0)", 0, {}
-    ok_lev, lev_msg = check_leverage(ex, symbol)
-    if not ok_lev:
-        return False, lev_msg, 0, {}
+    if not reduce_only:   # 신규 진입만 확인 — 청산(reduce-only) 주문은 어떤 경우에도 막지 않는다
+        ok_lev, lev_msg = check_leverage(ex, symbol)
+        if not ok_lev:
+            return False, lev_msg, 0, {}
     try:
         ex.load_markets()
         qty = float(ex.amount_to_precision(symbol, qty))   # 거래소 수량 단위로 내림 (기록과 실제 체결을 맞춤)
