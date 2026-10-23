@@ -36,6 +36,16 @@
   손절 중에는 신규 매수를 하지 않으며, 가격이 손절 시작 때의 기준가(마지막 매수가)까지 회복하면 손절 모드를 해제하고
   일반 그리드로 돌아간다. 손절 중 +1% 반등하면 평소처럼 10USDT씩 매도는 계속된다.
 
+[숏 전략 — 2026-10-23 추가, 롱 전략의 정반대]
+  롱 물량을 전부 손절하면 숏 모드로 전환한다(전환 시점 가격이 숏 기준가).
+    기준가 대비 +1% 상승 → 10USDT어치 숏 진입, 기준가를 그 가격으로 갱신(위로 래칫)
+    기준가 대비 -1% 하락 → 10USDT어치 되사서(reduce-only) 숏 청산, 기준가 갱신(아래로 래칫)
+    숏 누적이 max_total_usdt에 차고 +1% 더 오르면 → 숏 손절: 시작 수량의 10%씩 1%마다 되샀다(10번), 신규 숏 중단.
+    손절 중 가격이 손절 시작 기준가까지 내려오면 손절 모드 해제.
+    숏을 전부 손절하면 롱 모드로 복귀(롱 ⇄ 숏 순환).
+    숏 물량이 없는 채 가격이 내려가면 기준가만 따라 내린다(다음 +1% 반등 때 숏 진입).
+  숏 거래는 거래 원장(trade_ledger, 롱 전용 구조)에 기록하지 않고 로그·디스코드로만 남긴다.
+
 [안전장치]
   - auto_trade 기본값 False (알림만, 실제 주문 없음) — 반드시 --check로
     충분히 확인 후 True로 전환할 것
@@ -365,7 +375,7 @@ def check_grid(state: dict, price: float) -> dict:
 
     if price >= rise_trigger:
         qty_needed = (CFG["order_usdt"] * CFG["leverage"]) / price
-        if state.get("qty", 0.0) < qty_needed:
+        if state.get("qty", 0.0) <= 0:
             return {"action": "sell_blocked", "reason": "보유 수량 부족 — 매도할 물량 없음"}
         return {"action": "sell", "reason": f"기준가 {ref:,.4f} 대비 +{CFG['step_pct']:.0f}% 도달"}
 
@@ -393,7 +403,7 @@ def run_check(send: bool = True):
     print(f"  현재가: {price:,.4f} USDT")
 
     msg = None
-    if state.get("stop_active") and price >= state.get("stop_origin", float("inf")):
+    if state.get("mode") != "short" and state.get("stop_active") and price >= state.get("stop_origin", float("inf")):
         origin = state.get("stop_origin")
         for k in ("stop_active", "stop_base_qty", "stop_origin"):
             state.pop(k, None)
@@ -403,6 +413,9 @@ def run_check(send: bool = True):
         print(f"  ✅ 가격이 손절 시작 기준가 {origin:,.4f}까지 회복 — 손절 모드 해제")
         msg = (f"✅ <b>{CFG['symbol']} 손절 모드 해제</b>\n"
                f"가격이 손절 시작 기준가 {origin:,.4f}까지 회복했습니다. 일반 그리드로 복귀합니다.")
+
+    if state.get("mode") == "short":
+        return run_short(state, price, send, now)
 
     result = check_grid(state, price)
     action = result["action"]
@@ -443,13 +456,20 @@ def run_check(send: bool = True):
 
     elif action == "sell":
         qty_to_sell = (CFG["order_usdt"] * CFG["leverage"]) / price
+        have_q = state.get("qty", 0.0)
+        sell_all = have_q - qty_to_sell < qty_to_sell * 0.5     # 남는 게 한 칸의 절반 미만이면 전량 (잔량이 영영 못 팔리는 것 방지)
+        if sell_all:
+            qty_to_sell = have_q
         ok, detail, qty, info = place_order(CFG["symbol"], "sell", CFG["order_usdt"], price,
-                                             reduce_only=True, dry_run=not send)
+                                             reduce_only=True, dry_run=not send,
+                                             qty_override=qty_to_sell if sell_all else None)
         if ok:
             actual_qty = info.get("filled_qty", qty_to_sell)
             ref_before = state.get("reference_price") or price   # 이번 매도의 기준(직전 기준가)
             state["qty"] = max(0.0, state.get("qty", 0.0) - actual_qty)
             state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG["order_usdt"])
+            if state["qty"] <= 1e-9:
+                state["holdings_usdt"] = 0.0
             state["reference_price"] = price   # 래칫: 기준가를 더 위로
             # 실제 체결가와 직전 기준가로 이번 구간 수익률/손익 계산 (BTC 봇과 동일 방식)
             fill_price = info.get("avg_price", price)
@@ -509,6 +529,16 @@ def run_check(send: bool = True):
             print(f"  🛑 손절 체결: {detail}")
             if send:
                 _record("sell", now, price, "손절")
+            if state["qty"] <= 0:
+                for k in ("stop_active", "stop_base_qty", "stop_origin", "notified_budget_full"):
+                    state.pop(k, None)
+                state["mode"] = "short"
+                state["reference_price"] = price
+                state["qty"] = 0.0
+                state["holdings_usdt"] = 0.0
+                msg += (f"\n\n🔁 <b>롱 전량 손절 완료 → 숏 모드 전환</b>\n"
+                        f"숏 기준가 {price:,.4f} — +{CFG['step_pct']:.0f}% 오르면 {CFG['order_usdt']:.0f}USDT 숏 진입, "
+                        f"-{CFG['step_pct']:.0f}% 내리면 청산")
         else:
             msg = f"❌ <b>{CFG['symbol']} 손절 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
             print(f"  ❌ 손절 실패: {detail}")
@@ -528,6 +558,138 @@ def run_check(send: bool = True):
     else:
         print("  (--check 모드: 상태 저장 생략)")
 
+    if msg:
+        if send:
+            send_discord(msg)
+            print("\n  ✅ 알림 발송")
+        else:
+            print("\n  [--check, 발송 생략]")
+            print("  " + msg.replace("<b>","").replace("</b>",""))
+    else:
+        print("\n  액션 없음 (대기)")
+
+# ══════════════════════════════════════════════════════
+#  숏 모드 (롱 전량 손절 후) — 롱 전략의 정반대
+# ══════════════════════════════════════════════════════
+def check_grid_short(state: dict, price: float) -> dict:
+    ref = state.get("reference_price")
+    step = CFG["step_pct"] / 100
+    rise_trigger = ref * (1 + step)
+    drop_trigger = ref * (1 - step)
+    qty = state.get("qty", 0.0)
+
+    if price >= rise_trigger:
+        if state.get("stop_active") or state.get("holdings_usdt", 0.0) >= CFG["max_total_usdt"]:
+            if qty <= 0:
+                return {"action": None, "reason": "숏 손절 모드 — 정리할 물량 없음"}
+            return {"action": "short_stop", "reason":
+                    f"기준가 {ref:,.4f} 대비 +{CFG['step_pct']:.0f}% 추가 상승 — 숏 손절 단계 도달"}
+        return {"action": "short_open", "reason": f"기준가 {ref:,.4f} 대비 +{CFG['step_pct']:.0f}% 도달"}
+
+    if price <= drop_trigger:
+        if qty <= 0:
+            return {"action": "short_follow", "reason": f"숏 물량 없음 — 기준가를 {price:,.4f}로 하향 추종"}
+        return {"action": "short_cover", "reason": f"기준가 {ref:,.4f} 대비 -{CFG['step_pct']:.0f}% 도달"}
+
+    return {"action": None, "reason": f"[숏 모드] 대기 (기준가 {ref:,.4f}, "
+            f"청산트리거 {drop_trigger:,.4f} / 진입트리거 {rise_trigger:,.4f})"}
+
+def run_short(state: dict, price: float, send: bool, now: str):
+    # 손절 모드 해제: 가격이 손절 시작 기준가까지 내려옴
+    msg = None
+    if state.get("stop_active") and price <= state.get("stop_origin", 0):
+        origin = state.get("stop_origin")
+        for k in ("stop_active", "stop_base_qty", "stop_origin"):
+            state.pop(k, None)
+        print(f"  ✅ 가격이 숏 손절 시작 기준가 {origin:,.4f}까지 하락 — 숏 손절 모드 해제")
+        msg = (f"✅ <b>{CFG['symbol']} 숏 손절 모드 해제</b>\n"
+               f"가격이 숏 손절 시작 기준가 {origin:,.4f}까지 내려왔습니다. 일반 숏 그리드로 복귀합니다.")
+
+    result = check_grid_short(state, price)
+    action = result["action"]
+    print(f"  {result['reason']}")
+    ref_before = state.get("reference_price") or price
+    est = lambda info: " (추정치)" if info.get("estimated") else ""
+
+    if action == "short_follow":
+        state["reference_price"] = price
+
+    elif action == "short_open":
+        ok, detail, qty, info = place_order(CFG["symbol"], "sell", CFG["order_usdt"], price,
+                                             reduce_only=False, dry_run=not send)
+        if ok:
+            aq = info.get("filled_qty", qty)
+            state["qty"] = state.get("qty", 0.0) + aq
+            state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["order_usdt"]
+            state["reference_price"] = price
+            msg = (f"🔻 <b>{CFG['symbol']} 숏 진입</b> ({CFG['step_pct']:.0f}% 상승)\n"
+                   f"💰 금액: {info.get('cost', 0):,.2f} USDT{est(info)}\n"
+                   f"💵 체결가: {info.get('avg_price', price):,.4f} USDT\n"
+                   f"📦 수량: {aq:.6f}개\n"
+                   f"누적 숏: {state['holdings_usdt']:.0f} / {CFG['max_total_usdt']:.0f} USDT\n{detail}")
+            print(f"  🔻 숏 진입: {detail}")
+        else:
+            print(f"  ❌ 숏 진입 실패: {detail}")
+            if not ("40762" in detail or "exceeds the balance" in detail):
+                msg = f"❌ <b>{CFG['symbol']} 숏 진입 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
+
+    elif action in ("short_cover", "short_stop"):
+        have = state.get("qty", 0.0)
+        first = False
+        if action == "short_cover":
+            qty_to_buy = (CFG["order_usdt"] * CFG["leverage"]) / price
+            if have - qty_to_buy < qty_to_buy * 0.5 or have < qty_to_buy:   # 잔량이 한 칸 못 되면 전량
+                qty_to_buy = have
+            label = f"🔺 <b>{CFG['symbol']} 숏 청산</b> ({CFG['step_pct']:.0f}% 하락)"
+        else:
+            first = not state.get("stop_active")
+            base_qty = have if first else state.get("stop_base_qty", have)
+            qty_to_buy = min(base_qty * CFG["stop_loss_frac"], have)
+            if have - qty_to_buy < (CFG["order_usdt"] * CFG["leverage"]) / price:
+                qty_to_buy = have
+            label = (f"🛑 <b>{CFG['symbol']} 숏 손절</b> ({'손절 시작' if first else '손절 진행'}, "
+                     f"시작 수량의 {CFG['stop_loss_frac']*100:.0f}%)")
+        ok, detail, qty, info = place_order(CFG["symbol"], "buy", 0, price,
+                                             reduce_only=True, dry_run=not send,
+                                             qty_override=qty_to_buy)
+        if ok:
+            aq = info.get("filled_qty", qty_to_buy)
+            if action == "short_stop" and first:
+                state["stop_active"] = True
+                state["stop_base_qty"] = base_qty
+                state["stop_origin"] = ref_before
+            frac_left = max(0.0, have - aq) / have if have > 0 else 0.0
+            state["qty"] = max(0.0, have - aq)
+            state["holdings_usdt"] = state.get("holdings_usdt", 0.0) * frac_left
+            state["reference_price"] = price
+            fp = info.get("avg_price", price)
+            leg_ret = (ref_before - fp) / ref_before * 100      # 숏은 내려야 이익
+            leg_profit = aq * (ref_before - fp)
+            msg = (f"{label}\n"
+                   f"💰 금액: {info.get('cost', 0):,.2f} USDT{est(info)}\n"
+                   f"💵 체결가: {fp:,.4f} USDT\n"
+                   f"📦 수량: {aq:.6f}개\n"
+                   f"📊 직전 기준가 대비 수익률(숏): {leg_ret:+.2f}%\n"
+                   f"💸 손익(직전 기준가 대비, 수수료 제외): {leg_profit:+,.2f} USDT\n"
+                   f"남은 숏: {state['qty']:.0f}개 (약 {state['qty']*price:,.1f} USDT)\n{detail}")
+            print(f"  {'🛑' if action == 'short_stop' else '🔺'} 숏 청산 체결: {detail}")
+            if action == "short_stop" and state["qty"] <= 0:
+                for k in ("stop_active", "stop_base_qty", "stop_origin"):
+                    state.pop(k, None)
+                state["mode"] = "long"
+                state["reference_price"] = price
+                state["holdings_usdt"] = 0.0
+                state.pop("notified_budget_full", None)
+                msg += (f"\n\n🔁 <b>숏 전량 손절 완료 → 롱 모드 복귀</b>\n"
+                        f"롱 기준가 {price:,.4f} — -{CFG['step_pct']:.0f}% 내리면 {CFG['order_usdt']:.0f}USDT 매수")
+        else:
+            msg = f"❌ <b>{CFG['symbol']} 숏 청산 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
+            print(f"  ❌ 숏 청산 실패: {detail}")
+
+    if send:
+        save_state(state)
+    else:
+        print("  (--check 모드: 상태 저장 생략)")
     if msg:
         if send:
             send_discord(msg)
@@ -561,6 +723,7 @@ if __name__ == "__main__":
         if not st or st.get("reference_price") is None:
             print("  아직 시작 안 함 (기준가 미설정)")
         else:
+            print(f"  모드: {'숏' if st.get('mode') == 'short' else '롱'}")
             print(f"  기준가: {st['reference_price']:,.4f}")
             print(f"  레버리지: {CFG['leverage']}배")
             print(f"  보유 수량: {st.get('qty',0):.4f}")
