@@ -7,15 +7,13 @@ coin_grid_birb_monitor.py(BIRB)를 그대로 따른 BTC용 봇 (2026-10-23).
 (기존 coin_range_monitor.py의 RSI 기반 BTC 봇과는 별개의 봇이다 — 상태 파일·원장이 따로다.)
 
 [BTC 특성 — 설정 시 참고]
-  BTC는 하루 고저폭이 평균 2.4% 정도로 알트코인에 비해 작다. 모의(1분봉 15일, 수수료 0.04%+슬리피지 0.02% 편도):
-  0.1% 간격(사용자 선택, 2026-10-23)은 시작 보유 30USDT 기준 24시간 평균 -0.30 / 중앙 +0.01 USDT, 하루 평균 약 70회 체결, 최악 -3.9 USDT.
-  (0.2%는 평균 -0.08 / 중앙 +0.13 / 약 32회, 0.3~0.5%는 평균 ≈ 0.)
-  왕복 비용이 약 0.12%(수수료 0.04%x2 + 슬리피지 0.02%x2)로 간격 0.1%보다 커서, 한 번 왕복할 때마다 약 -0.002USDT(10USDT 기준)가 남는다.
-  즉 체결이 많을수록 비용이 쌓이는 구조라 수익보다는 매매 빈도를 즐기는 설정에 가깝다. 기대값은 음수 쪽이다.
+  BTC는 하루 고저폭이 평균 2.4% 정도로 알트코인에 비해 작아서 1% 간격이면 하루 1~2번 체결되는 정도다.
+  모의(1분봉 15일, 수수료 0.04%+슬리피지 0.02% 편도): 1% 간격 대칭은 평균 ≈ 0(-0.00~+0.00 USDT/일), 0.1% 간격은 평균 -0.30 USDT/일이었다.
+  2026-10-23 사용자 요청으로 IRYS·BIRB와 같은 방식(매수 1%/10USDT, 매도 1.5%/15USDT)으로 맞췄다(처음엔 0.2%→0.1% 간격이었음).
   고점 -12% 청산은 BTC에서는 하루 안에 거의 발동하지 않는다 — 사실상 장기 하락 대비용 안전장치다.
 
 [최소 주문 단위]
-  BTC 최소 수량 단위는 0.0001 BTC(약 8USDT). 10USDT 주문은 거래소 단위로 내림되어 약 8USDT어치(0.0001 BTC)로 체결된다.
+  BTC 최소 수량 단위는 0.0001 BTC(약 8USDT). 주문 수량은 가장 가까운 단위로 반올림한다: 매수 10USDT→0.0001 BTC(약 8USDT), 매도 15USDT→0.0002 BTC(약 16USDT).
   봇은 실제 체결 수량 기준으로 물량·손익을 계산한다.
 
 [고점 청산 — 2026-10-23 추가, 급등탐지 종목용]
@@ -104,7 +102,9 @@ def _record(side: str, time_str: str, price: float, note: str = ""):
 # ══════════════════════════════════════════════════════
 CFG = {
     "symbol"          : "BTC/USDT:USDT",    # 2026-10-23 확인 (Bitget USDT 선물)
-    "step_pct"        : 0.1,               # 그리드 간격 1% (등락이 큰 종목 — 모의 결과로 선택, 위 문서 참고)
+    "sell_step_pct"   : 1.5,               # 매도 간격(상승 %) — 매수 1% / 매도 1.5% (IRYS·BIRB와 동일, 2026-10-23)
+    "step_pct"        : 1.0,               # 그리드 간격 1% (등락이 큰 종목 — 모의 결과로 선택, 위 문서 참고)
+    "sell_order_usdt" : 15.0,              # 1회 매도 금액(명목 USDT) — 매수 10 / 매도 15 (IRYS·BIRB와 동일)
     "order_usdt"      : 10.0,              # 1회 매수/매도 금액(명목 USDT)
     "max_total_usdt"  : 100.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (10회분, 변동성이 커서 보수적으로)
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
@@ -301,7 +301,9 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
             return False, lev_msg, 0, {}
     try:
         ex.load_markets()
-        qty = float(ex.amount_to_precision(symbol, qty))   # 거래소 수량 단위로 내림 (기록과 실제 체결을 맞춤)
+        step_q = float(ex.market(symbol)["precision"]["amount"])
+        qty = max(step_q, round(qty / step_q + 1e-9) * step_q)   # BTC는 최소 단위(0.0001)가 커서 내림하면 10/15USDT 구분이 사라진다 → 가장 가까운 단위로 반올림
+        qty = float(ex.amount_to_precision(symbol, qty))
         if qty <= 0:
             return False, "수량이 최소 단위 미만 — 주문 금액을 늘려야 합니다", 0, {}
         order_params = {"hedged": True, "reduceOnly": reduce_only, **UTA}
@@ -394,7 +396,7 @@ def check_grid(state: dict, price: float) -> dict:
 
     step = CFG["step_pct"] / 100
     drop_trigger = ref * (1 - step)
-    rise_trigger = ref * (1 + step)
+    rise_trigger = ref * (1 + CFG.get("sell_step_pct", CFG["step_pct"]) / 100)
 
     if price <= drop_trigger:
         invested = state.get("holdings_usdt", 0.0)
@@ -414,7 +416,7 @@ def check_grid(state: dict, price: float) -> dict:
         qty_needed = (CFG["order_usdt"] * CFG["leverage"]) / price
         if state.get("qty", 0.0) <= 0:
             return {"action": "sell_blocked", "reason": "보유 수량 부족 — 매도할 물량 없음"}
-        return {"action": "sell", "reason": f"기준가 {ref:,.4f} 대비 +{CFG['step_pct']:g}% 도달"}
+        return {"action": "sell", "reason": f"기준가 {ref:,.4f} 대비 +{CFG.get('sell_step_pct', CFG['step_pct']):g}% 도달"}
 
     return {"action": None, "reason": f"대기 (기준가 {ref:,.4f}, "
             f"매수트리거 {drop_trigger:,.4f} / 매도트리거 {rise_trigger:,.4f})"}
@@ -539,12 +541,12 @@ def run_check(send: bool = True):
                 msg = f"❌ <b>{CFG['symbol']} 매수 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
 
     elif action == "sell":
-        qty_to_sell = (CFG["order_usdt"] * CFG["leverage"]) / price
+        qty_to_sell = (CFG.get("sell_order_usdt", CFG["order_usdt"]) * CFG["leverage"]) / price
         have_q = state.get("qty", 0.0)
         sell_all = have_q - qty_to_sell < qty_to_sell * 0.5     # 남는 게 한 칸의 절반 미만이면 전량 (잔량이 영영 못 팔리는 것 방지)
         if sell_all:
             qty_to_sell = have_q
-        ok, detail, qty, info = place_order(CFG["symbol"], "sell", CFG["order_usdt"], price,
+        ok, detail, qty, info = place_order(CFG["symbol"], "sell", CFG.get("sell_order_usdt", CFG["order_usdt"]), price,
                                              reduce_only=True, dry_run=not send,
                                              qty_override=qty_to_sell if sell_all else None)
         if ok:
@@ -552,7 +554,7 @@ def run_check(send: bool = True):
             _acct_sell(state, actual_qty, info.get("avg_price", price), info.get("fee"))
             ref_before = state.get("reference_price") or price   # 이번 매도의 기준(직전 기준가)
             state["qty"] = max(0.0, state.get("qty", 0.0) - actual_qty)
-            state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG["order_usdt"])
+            state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG.get("sell_order_usdt", CFG["order_usdt"]))
             if state["qty"] <= 1e-9:
                 state["holdings_usdt"] = 0.0
             state["reference_price"] = price   # 래칫: 기준가를 더 위로
@@ -561,7 +563,7 @@ def run_check(send: bool = True):
             leg_ret = (fill_price - ref_before) / ref_before * 100
             leg_profit = actual_qty * (fill_price - ref_before)
             est_note = " (추정치)" if info.get("estimated") else ""
-            msg = (f"🔴 <b>{CFG['symbol']} 매도</b> ({CFG['step_pct']:g}% 상승)\n"
+            msg = (f"🔴 <b>{CFG['symbol']} 매도</b> ({CFG.get('sell_step_pct', CFG['step_pct']):g}% 상승)\n"
                    f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
                    f"💵 체결가: {info.get('avg_price', price):,.4f} USDT\n"
                    f"📦 수량: {info.get('filled_qty', qty_to_sell):.6f}개\n"
