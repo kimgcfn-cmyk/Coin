@@ -29,6 +29,10 @@
     +1% 상승 → 보유 중이면 10USDT어치 매도, 기준가를 그 가격으로 갱신(더 위로 래칫)
   총 매수 누적액이 max_total_usdt 도달 시 → 매수 중단(매도 감시는 계속)
 
+[기준가 상승 추종 — 2026-10-24]
+  봇 물량이 0이면(다 팔았으면) 기준가를 현재가까지 계속 올린다. 그래야 다시 사는 지점이 '직전 고가의 -1%'가 된다.
+  (이전에는 기준가가 마지막 매도가에 머물러, 가격이 계속 오르면 그 -1%까지 내려와야만 다시 샀다)
+
 [비대칭 간격 — 2026-10-23, 사용자 선택]
   매수는 기준가 -1%(step_pct)에서 10USDT(order_usdt), 매도는 기준가 +1.5%(sell_step_pct)에서 15USDT(sell_order_usdt)어치를 한다.
   이익 폭을 키워 손익비를 높이려는 시도. 한 번 팔 때 사는 양보다 크게 파므로 물량이 사는 속도보다 빨리 줄어든다.
@@ -515,6 +519,12 @@ def run_check(send: bool = True):
         print(f"  ✅ 가격이 손절 시작 기준가 {origin:,.4f}까지 회복 — 손절 모드 해제")
         msg = (f"✅ <b>{CFG['symbol']} 손절 모드 해제</b>\n"
                f"가격이 손절 시작 기준가 {origin:,.4f}까지 회복했습니다. 일반 그리드로 복귀합니다.")
+
+    # 봇 물량이 없으면 기준가를 상승에 따라 올린다 — 안 그러면 다 팔고 난 뒤 기준가가 마지막 매도가에 머물러
+    # 이후 상승분을 놓치고, 그 가격의 -1%까지 내려와야만 다시 산다 (2026-10-24 추가)
+    if state.get("mode") != "short" and state.get("qty", 0.0) <= 0 and price > (state.get("reference_price") or price):
+        print(f"  ⬆️ 봇 물량 없음 — 기준가 {state['reference_price']:,.4f} → {price:,.4f} (상승 추종)")
+        state["reference_price"] = price
 
     if state.get("mode") == "short":
         return run_short(state, price, send, now)
