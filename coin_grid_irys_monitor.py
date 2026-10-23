@@ -1,0 +1,499 @@
+"""
+코인 그리드매매 실전 자동매매 — "떨사오팔" 전략 (IRYSUSDT)
+============================================================
+기준가 대비 -5% 하락마다 10USDT 매수, +5% 상승마다 10USDT 매도를
+반복하는 그리드매매 봇. coin_grid_monitor.py(TQQQ)와 같은 구조를 따르되,
+등락이 큰 알트코인 IRYS에 맞춰 간격·한도를 따로 잡았다 (2026-10-23).
+
+[IRYS 설정 근거 — 최근 22일 5분봉 모의 결과, 참고용]
+  간격 5% 선택: 상승장 +20 USDT / 가상 하락장(-60%) -29 USDT로 균형이 가장 좋았다.
+  (3%는 상승장 +30이지만 하락장 -44, 2%는 -58로 한도에 빨리 닿는다.)
+  모의 기간이 +140% 상승장이라 하락장 성과는 가격 경로를 거꾸로 돌린 가정치일 뿐이다.
+
+[수동 포지션과의 관계]
+  양방향(hedge) 모드에서 같은 종목의 롱은 하나로 합쳐진다. 사용자가 수동으로 잡은 IRYS 롱이
+  있으면 봇의 롱은 그 포지션에 합산된다. 봇은 자기가 산 수량(state의 qty)만큼만 reduce-only로
+  팔고, 사용자의 수동 수량은 건드리지 않는다. 다만 수동으로 건 손절/익절 예약은 합산 전체에 적용된다.
+  계정의 IRYS 레버리지는 사용자의 수동 포지션이 쓰므로 봇은 확인하지도 바꾸지도 않는다(guard_leverage=False).
+
+[전략 성격 — 반드시 인지할 것]
+  그리드매매는 박스권/횡보장에서 강하고, 한쪽 추세가 지속되면 약하다.
+  IRYS가 계속 하락만 하면 매수만 반복 누적되고 매도 기회가 안 와서
+  자금이 무한정 물릴 수 있다. 그래서 총 투입 한도(max_total_usdt)를
+  반드시 설정해 무제한 매수를 막는다.
+
+[동작 방식]
+  기준가(reference_price) 대비:
+    -5% 하락 → 10USDT 매수, 기준가를 그 가격으로 갱신(더 아래로 래칫)
+    +5% 상승 → 보유 중이면 10USDT어치 매도, 기준가를 그 가격으로 갱신(더 위로 래칫)
+  총 매수 누적액이 max_total_usdt 도달 시 → 매수 중단(매도 감시는 계속)
+
+[안전장치]
+  - auto_trade 기본값 False (알림만, 실제 주문 없음) — 반드시 --check로
+    충분히 확인 후 True로 전환할 것
+  - max_total_usdt 로 무한 물타기 방지
+  - 실제 주문은 Bitget API(ccxt) 사용, .env의 BITGET_API_KEY 등 필요
+
+[.env 설정 — 이미 있다면 재사용]
+  BITGET_API_KEY=...
+  BITGET_API_SECRET=...
+  BITGET_PASSPHRASE=...
+  DISCORD_WEBHOOK_URL_GRID=... (그리드 전용 디스코드 채널 권장)
+
+실행:
+  python coin_grid_monitor.py --find-symbol   # 정확한 거래 심볼 형식 확인 (최초 1회 필수)
+  python coin_grid_monitor.py --check          # 1회 점검 (주문 없음, 상태 저장도 안 함)
+  python coin_grid_monitor.py                  # 1회 점검 + 신호 발생 시 실행 (cron용)
+  python coin_grid_monitor.py --status          # 현재 보유/기준가 현황
+  python coin_grid_monitor.py --reset           # 상태 초기화 (매매 기록 삭제, 실제 보유는 그대로)
+"""
+
+import sys, json, os, re, time
+from datetime import datetime, timezone
+
+try:
+    import ccxt
+    HAS_CCXT = True
+except ImportError:
+    HAS_CCXT = False
+
+try:
+    import config as _cfg
+    def _cget(key):
+        return _cfg._get(key) if hasattr(_cfg, "_get") else getattr(_cfg, key, "")
+    DISCORD_WEBHOOK_URL   = _cget("DISCORD_WEBHOOK_URL_GRID") or _cget("DISCORD_WEBHOOK_URL")
+    BITGET_API_KEY        = _cget("BITGET_API_KEY")
+    BITGET_API_SECRET     = _cget("BITGET_API_SECRET") or _cget("BITGET_SECRET_KEY")
+    BITGET_PASSPHRASE     = _cget("BITGET_PASSPHRASE") or _cget("BITGET_PASSWORD")
+except ImportError:
+    print("⚠️  config.py 없음 — .env 설정 확인 필요")
+    DISCORD_WEBHOOK_URL = BITGET_API_KEY = BITGET_API_SECRET = BITGET_PASSPHRASE = ""
+
+import requests
+
+try:
+    import trade_ledger
+    HAS_LEDGER = True
+except ImportError:
+    HAS_LEDGER = False
+
+def _record(side: str, time_str: str, price: float, note: str = ""):
+    """체결 기록 실패가 실거래 로직에 영향 주지 않도록 별도 방어."""
+    if not HAS_LEDGER:
+        return
+    try:
+        trade_ledger.append_trade("IRYS", side, time_str, price, note)
+    except Exception as e:
+        print(f"  ⚠️ 거래 기록(엑셀) 실패: {e}")
+
+# ══════════════════════════════════════════════════════
+#  설정 — "떨사오팔" 그리드 파라미터
+# ══════════════════════════════════════════════════════
+CFG = {
+    "symbol"          : "IRYS/USDT:USDT",  # 2026-10-23 확인 (Bitget USDT 선물)
+    "step_pct"        : 5.0,               # 그리드 간격 5% (등락이 큰 종목 — 모의 결과로 선택, 위 문서 참고)
+    "order_usdt"      : 10.0,              # 1회 매수/매도 금액(명목 USDT)
+    "max_total_usdt"  : 100.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (10회분, 변동성이 커서 보수적으로)
+    "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
+    "guard_leverage"  : False,             # 계정 IRYS 레버리지(수동 포지션용 10배)와 달라도 주문 보류하지 않음
+    "auto_trade"      : False,             # ⚠️ 새 봇이라 False로 시작 — 점검 후 True로 전환
+    "state_file"      : "coin_grid_irys_state.json",
+}
+
+# ══════════════════════════════════════════════════════
+#  디스코드
+# ══════════════════════════════════════════════════════
+def _html_to_discord_markdown(text: str) -> str:
+    text = re.sub(r"<b>(.*?)</b>", r"**\1**", text, flags=re.DOTALL)
+    text = re.sub(r"<i>(.*?)</i>", r"*\1*", text, flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", "", text)
+    return text
+
+def send_discord(text: str) -> bool:
+    if not DISCORD_WEBHOOK_URL:
+        print("  (디스코드 웹훅 미설정 — 콘솔 출력만)")
+        print(text)
+        return False
+    content = _html_to_discord_markdown(text)
+    if len(content) > 1900:
+        content = content[:1900] + "\n…(생략)"
+    try:
+        r = requests.post(DISCORD_WEBHOOK_URL, json={"content": content}, timeout=10)
+        return r.status_code in (200, 204)
+    except Exception as e:
+        print(f"  디스코드 오류: {e}")
+        return False
+
+# ══════════════════════════════════════════════════════
+#  상태 저장/로드
+# ══════════════════════════════════════════════════════
+def load_state() -> dict:
+    path = CFG["state_file"]
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_state(s: dict):
+    with open(CFG["state_file"], "w", encoding="utf-8") as f:
+        json.dump(s, f, ensure_ascii=False, indent=2)
+
+# ══════════════════════════════════════════════════════
+#  거래소 (Bitget, ccxt)
+# ══════════════════════════════════════════════════════
+def get_exchange():
+    if not HAS_CCXT:
+        print("  ❌ ccxt 필요: pip install ccxt")
+        return None
+    if not (BITGET_API_KEY and BITGET_API_SECRET and BITGET_PASSPHRASE):
+        print("  ⚠️  Bitget API 키 미설정 — 시세 조회는 되지만 주문은 불가")
+    return ccxt.bitget({
+        "apiKey": BITGET_API_KEY, "secret": BITGET_API_SECRET,
+        "password": BITGET_PASSPHRASE, "enableRateLimit": True,
+    })
+
+UTA = {"uta": True, "productType": "USDT-FUTURES"}   # 통합계정(UTA) API 사용 (2026-10-15 계정 전환, Classic API는 40085)
+
+def fill_from_order(o: dict) -> dict:
+    """fetch_order 결과에서 실제 체결 수량/평균가/체결금액을 뽑는다.
+    통합계정 응답은 ccxt가 average/cost를 못 채우는 경우가 있어 원본(info)의
+    cumExecQty / avgPrice / cumExecValue를 직접 읽는다. 값이 없으면 해당 항목은 None."""
+    inf = o.get("info") or {}
+    def num(*vals):
+        for v in vals:
+            try:
+                f = float(v)
+                if f > 0:
+                    return f
+            except (TypeError, ValueError):
+                pass
+        return None
+    return {"filled": num(o.get("filled"), inf.get("cumExecQty")),
+            "average": num(o.get("average"), inf.get("avgPrice")),
+            "cost": num(o.get("cost"), inf.get("cumExecValue"))}
+
+def check_leverage(ex, symbol: str) -> tuple:
+    """계정에 설정된 해당 종목 레버리지가 CFG와 같은지 확인. 사용자가 수동 포지션 때문에 바꿔둔
+    경우(같은 종목, 교차 마진) 봇 수량 계산이 어긋나므로 다르면 주문을 보류한다.
+    반환: (통과여부, 메시지)"""
+    try:
+        r = ex.privateUtaGetV3AccountSettings({})
+        data = r.get("data") or {}
+        sid = symbol.split("/")[0] + "USDT"
+        for c in data.get("symbolConfigList", []):
+            if c.get("symbol") == sid and c.get("category") == "USDT-FUTURES":
+                lev = float(c.get("leverage") or c.get("longLeverage") or 0)
+                if lev and abs(lev - CFG["leverage"]) > 1e-9:
+                    return False, f"계정 레버리지 {lev:g}배 ≠ 설정 {CFG['leverage']}배 — 주문 보류(계정 설정 확인 필요)"
+        return True, ""
+    except Exception as e:
+        return False, f"레버리지 확인 실패: {e}"
+
+def find_symbol(keyword: str = "IRYS"):
+    """정확한 거래 심볼 형식을 찾는 도구. 최초 1회 반드시 실행 권장."""
+    ex = get_exchange()
+    if not ex:
+        return
+    try:
+        markets = ex.load_markets()
+    except Exception as e:
+        print(f"  ❌ 마켓 목록 조회 실패: {e}")
+        return
+    matches = [m for m in markets if keyword.upper() in m.upper()]
+    if not matches:
+        print(f"  ⚠️  '{keyword}' 포함 심볼을 찾지 못했습니다. "
+              f"Bitget에 해당 자산이 없거나 다른 이름일 수 있습니다.")
+        return
+    print(f"  '{keyword}' 관련 심볼 {len(matches)}개:")
+    for m in matches:
+        info = markets[m]
+        kind = "선물(swap)" if info.get("swap") else ("현물(spot)" if info.get("spot") else "?")
+        print(f"    {m}   [{kind}]")
+    print(f"\n  이 중 정확한 심볼을 CFG['symbol']에 넣으세요 (기본값: IRYS/USDT:USDT 는 2026-10-23 확인된 값입니다).")
+
+def fetch_price(symbol: str) -> float:
+    ex = get_exchange()
+    if not ex:
+        return 0.0
+    try:
+        ticker = ex.fetch_ticker(symbol)
+        return float(ticker.get("last") or 0)
+    except Exception as e:
+        print(f"  시세 조회 오류: {e}")
+        return 0.0
+
+def place_order(symbol: str, side: str, margin_usdt: float, price: float,
+                 reduce_only: bool = False, dry_run: bool = False) -> tuple:
+    """
+    실제 시장가 주문. margin_usdt는 투입 증거금이고, 실제 체결 수량은
+    레버리지가 곱해진 명목가치(notional) 기준으로 계산된다.
+
+    ⚠️ 2026-08-21 최종 수정: ccxt bitget.py 소스코드 직접 확인 결과,
+    holdSide를 직접 넣는 건 무시되고 ccxt가 'hedged' bool 값을 보고
+    자동으로 holdSide/posSide를 계산해서 넣는 구조였다.
+    (ccxt==4.5.64 기준, venv/lib/python3.9/site-packages/ccxt/bitget.py
+     5113~5235줄 참고 — hedged=True면 holdSide/posSide를 hedge_mode
+     방식으로 자동 세팅해줌)
+    계좌가 hedge_mode이므로 hedged=True 고정.
+
+    ⚠️ 2026-10-23: 통합계정(UTA) 주문으로 전환 — Classic 주문 API가 40085로 막힘.
+    UTA 파라미터({"uta": True, "productType": "USDT-FUTURES"})로 주문하고, 주문 직후 fetch_order로
+    실제 체결 수량/가격을 조회해 반환한다(조회 실패 시에만 추정치). 양방향(hedge) 모드라
+    사용자의 수동 숏과 봇의 롱은 별개 포지션이다. 레버리지는 봇이 바꾸지 않고 check_leverage로 확인만 한다.
+
+    ⚠️ 2026-09-05: dry_run 인자 추가 — 이전엔 auto_trade만 보고 --check에서도
+    실주문이 나가는 사고가 있었다(run_check(send=False)여도 이 함수는
+    send를 몰랐음). 이제 dry_run=True(=--check)면 auto_trade와 무관하게
+    무조건 주문을 막는다.
+
+    반환: (성공여부, 메시지, 체결수량, 체결정보dict)
+      체결정보dict: {"cost": 실제체결금액USDT, "avg_price": 체결평균가,
+                    "filled_qty": 체결수량, "estimated": bool(추정치여부)}
+    """
+    lev = CFG["leverage"]
+    notional = margin_usdt * lev
+    qty = notional / price if price > 0 else 0
+    if dry_run:
+        info = {"cost": notional, "avg_price": price, "filled_qty": qty, "estimated": True}
+        return True, f"--check 모드 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty, info
+    if not CFG["auto_trade"]:
+        info = {"cost": notional, "avg_price": price, "filled_qty": qty, "estimated": True}
+        return True, f"auto_trade 꺼짐 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty, info
+    ex = get_exchange()
+    if not ex:
+        return False, "거래소 연결 실패", 0, {}
+    if qty <= 0:
+        return False, "수량 계산 오류(가격 0)", 0, {}
+    if CFG.get("guard_leverage", True) and not reduce_only:   # 신규 진입만 확인 — 청산(reduce-only) 주문은 어떤 경우에도 막지 않는다
+        ok_lev, lev_msg = check_leverage(ex, symbol)
+        if not ok_lev:
+            return False, lev_msg, 0, {}
+    try:
+        ex.load_markets()
+        qty = float(ex.amount_to_precision(symbol, qty))   # 거래소 수량 단위로 내림 (기록과 실제 체결을 맞춤)
+        if qty <= 0:
+            return False, "수량이 최소 단위 미만 — 주문 금액을 늘려야 합니다", 0, {}
+        order_params = {"hedged": True, "reduceOnly": reduce_only, **UTA}
+        order = ex.create_market_order(symbol, side, qty, params=order_params)
+
+        # 통합계정 주문 응답에는 체결 정보가 없어서, 주문 조회로 실제 체결 수량/가격을 가져온다
+        fill = {}
+        oid = order.get("id")
+        for _ in range(4):
+            if not oid:
+                break
+            try:
+                f = fill_from_order(ex.fetch_order(oid, symbol, UTA))
+                if f["filled"]:
+                    fill = f
+                    break
+            except Exception:
+                pass
+            time.sleep(0.6)
+        if fill:
+            order = {**order, **{k: v for k, v in fill.items() if v is not None}}
+
+        actual_cost = order.get("cost")
+        actual_avg = order.get("average") or order.get("price")
+        actual_filled = order.get("filled") or order.get("amount")
+        estimated = False
+        if actual_avg is None:
+            actual_avg = price
+            estimated = True
+        if actual_filled is None:
+            actual_filled = qty
+            estimated = True
+        if actual_cost is None:
+            actual_cost = actual_filled * actual_avg
+            estimated = True
+
+        info = {"cost": actual_cost, "avg_price": actual_avg,
+                "filled_qty": actual_filled, "estimated": estimated}
+        est_note = " (체결정보 미수신, 요청값 기준 추정)" if estimated else ""
+        return True, (f"체결 완료 (주문ID {order.get('id','?')}, "
+                      f"금액 {actual_cost:,.2f}USDT, 체결가 {actual_avg:,.2f}, "
+                      f"수량 {actual_filled:.6f}{est_note})"), qty, info
+    except Exception as e:
+        return False, f"주문 실패: {e}", 0, {}
+
+# ══════════════════════════════════════════════════════
+#  그리드 로직
+# ══════════════════════════════════════════════════════
+def check_grid(state: dict, price: float) -> dict:
+    """
+    현재가를 기준가와 비교해 매수/매도 신호 판단.
+    반환: {"action": "buy"|"sell"|None, "reason": str}
+    """
+    ref = state.get("reference_price")
+    if ref is None or ref <= 0:
+        return {"action": "init", "reason": "최초 실행 — 기준가 설정"}
+
+    step = CFG["step_pct"] / 100
+    drop_trigger = ref * (1 - step)
+    rise_trigger = ref * (1 + step)
+
+    if price <= drop_trigger:
+        invested = state.get("holdings_usdt", 0.0)
+        if invested >= CFG["max_total_usdt"]:
+            return {"action": "buy_blocked", "reason":
+                    f"총 투입한도({CFG['max_total_usdt']:.0f}USDT) 도달 — 매수 중단(안전장치)"}
+        return {"action": "buy", "reason": f"기준가 {ref:,.4f} 대비 -{CFG['step_pct']:.0f}% 도달"}
+
+    if price >= rise_trigger:
+        qty_needed = (CFG["order_usdt"] * CFG["leverage"]) / price
+        if state.get("qty", 0.0) < qty_needed:
+            return {"action": "sell_blocked", "reason": "보유 수량 부족 — 매도할 물량 없음"}
+        return {"action": "sell", "reason": f"기준가 {ref:,.4f} 대비 +{CFG['step_pct']:.0f}% 도달"}
+
+    return {"action": None, "reason": f"대기 (기준가 {ref:,.4f}, "
+            f"매수트리거 {drop_trigger:,.4f} / 매도트리거 {rise_trigger:,.4f})"}
+
+# ══════════════════════════════════════════════════════
+#  메인 점검
+# ══════════════════════════════════════════════════════
+def run_check(send: bool = True):
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    print(f"\n{'='*56}")
+    print(f"  코인 그리드매매 (떨사오팔) — {CFG['symbol']} — {now}")
+    print(f"{'='*56}")
+
+    if not HAS_CCXT:
+        print("  ❌ ccxt 필요: pip install ccxt")
+        return
+
+    state = load_state()
+    price = fetch_price(CFG["symbol"])
+    if price <= 0:
+        print(f"  ❌ {CFG['symbol']} 시세 조회 실패 — --find-symbol 로 정확한 심볼 확인 필요")
+        return
+    print(f"  현재가: {price:,.4f} USDT")
+
+    result = check_grid(state, price)
+    action = result["action"]
+    print(f"  {result['reason']}")
+
+    msg = None
+
+    if action == "init":
+        state["reference_price"] = price
+        state.setdefault("holdings_usdt", 0.0)
+        state.setdefault("qty", 0.0)
+        print(f"  ✅ 기준가 {price:,.4f} 설정 완료")
+
+    elif action == "buy":
+        ok, detail, qty, info = place_order(CFG["symbol"], "buy", CFG["order_usdt"], price,
+                                             reduce_only=False, dry_run=not send)
+        if ok:
+            actual_qty = info.get("filled_qty", qty)
+            state["qty"] = state.get("qty", 0.0) + actual_qty
+            state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["order_usdt"]
+            state["reference_price"] = price   # 래칫: 기준가를 더 아래로
+            est_note = " (추정치)" if info.get("estimated") else ""
+            msg = (f"🟢 <b>{CFG['symbol']} 매수</b> ({CFG['step_pct']:.0f}% 하락)\n"
+                   f"💰 매수 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
+                   f"💵 체결가: {info.get('avg_price', price):,.4f} USDT\n"
+                   f"📦 수량: {info.get('filled_qty', qty):.6f}개\n"
+                   f"증거금: {CFG['order_usdt']:.0f} USDT × {CFG['leverage']}배 레버리지\n"
+                   f"누적 증거금: {state['holdings_usdt']:.0f} / {CFG['max_total_usdt']:.0f} USDT\n"
+                   f"{detail}")
+            print(f"  🟢 매수 체결: {detail}")
+            if send:
+                _record("buy", now, price)
+        else:
+            print(f"  ❌ 매수 실패: {detail}")
+            if "40762" in detail or "exceeds the balance" in detail:
+                # 잔고 부족(Bitget 40762): 10분마다 같은 실패가 반복되므로 디스코드 알림은 생략 (로그에만 남김)
+                msg = None
+            else:
+                msg = f"❌ <b>{CFG['symbol']} 매수 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
+
+    elif action == "sell":
+        qty_to_sell = (CFG["order_usdt"] * CFG["leverage"]) / price
+        ok, detail, qty, info = place_order(CFG["symbol"], "sell", CFG["order_usdt"], price,
+                                             reduce_only=True, dry_run=not send)
+        if ok:
+            actual_qty = info.get("filled_qty", qty_to_sell)
+            ref_before = state.get("reference_price") or price   # 이번 매도의 기준(직전 기준가)
+            state["qty"] = max(0.0, state.get("qty", 0.0) - actual_qty)
+            state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG["order_usdt"])
+            state["reference_price"] = price   # 래칫: 기준가를 더 위로
+            # 실제 체결가와 직전 기준가로 이번 구간 수익률/손익 계산 (BTC 봇과 동일 방식)
+            fill_price = info.get("avg_price", price)
+            leg_ret = (fill_price - ref_before) / ref_before * 100
+            leg_profit = actual_qty * (fill_price - ref_before)
+            est_note = " (추정치)" if info.get("estimated") else ""
+            msg = (f"🔴 <b>{CFG['symbol']} 매도</b> ({CFG['step_pct']:.0f}% 상승)\n"
+                   f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
+                   f"💵 체결가: {info.get('avg_price', price):,.4f} USDT\n"
+                   f"📦 수량: {info.get('filled_qty', qty_to_sell):.6f}개\n"
+                   f"📊 이번 거래 수익률: {leg_ret:+.2f}% "
+                   f"(레버리지 반영 {leg_ret*CFG['leverage']:+.2f}%)\n"
+                   f"💸 실현 손익(추정, 수수료 제외): {leg_profit:+,.2f} USDT\n"
+                   f"잔여 증거금: {state['holdings_usdt']:.0f} USDT\n"
+                   f"{detail}")
+            print(f"  🔴 매도 체결: {detail}")
+            if send:
+                _record("sell", now, price)
+        else:
+            msg = f"❌ <b>{CFG['symbol']} 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
+            print(f"  ❌ 매도 실패: {detail}")
+
+    elif action == "buy_blocked":
+        print(f"  ⚠️ {result['reason']}")
+        # 매수 막힘 알림은 반복 스팸 방지를 위해 상태에 1회만 기록
+        if not state.get("notified_budget_full"):
+            msg = f"⚠️ <b>{CFG['symbol']} 매수 한도 도달</b>\n{result['reason']}\n(매도는 계속 감시 중)"
+            state["notified_budget_full"] = True
+
+    elif action == "sell_blocked":
+        print(f"  ⚠️ {result['reason']}")
+
+    if send:
+        save_state(state)
+    else:
+        print("  (--check 모드: 상태 저장 생략)")
+
+    if msg:
+        if send:
+            send_discord(msg)
+            print("\n  ✅ 알림 발송")
+        else:
+            print("\n  [--check, 발송 생략]")
+            print("  " + msg.replace("<b>","").replace("</b>",""))
+    else:
+        print("\n  액션 없음 (대기)")
+
+# ══════════════════════════════════════════════════════
+#  실행
+# ══════════════════════════════════════════════════════
+if __name__ == "__main__":
+    args = sys.argv[1:]
+
+    if "--find-symbol" in args:
+        idx = args.index("--find-symbol")
+        kw = args[idx+1] if idx+1 < len(args) else "IRYS"
+        find_symbol(kw)
+        sys.exit(0)
+
+    if "--reset" in args:
+        if os.path.exists(CFG["state_file"]):
+            os.remove(CFG["state_file"])
+        print("  ✅ 그리드 상태 초기화 완료 (실제 보유 코인은 그대로입니다)")
+        sys.exit(0)
+
+    if "--status" in args:
+        st = load_state()
+        if not st or st.get("reference_price") is None:
+            print("  아직 시작 안 함 (기준가 미설정)")
+        else:
+            print(f"  기준가: {st['reference_price']:,.4f}")
+            print(f"  레버리지: {CFG['leverage']}배")
+            print(f"  보유 수량: {st.get('qty',0):.4f}")
+            print(f"  누적 증거금: {st.get('holdings_usdt',0):.0f} / {CFG['max_total_usdt']:.0f} USDT")
+            print(f"  누적 노출액(레버리지 반영): {st.get('holdings_usdt',0)*CFG['leverage']:.0f} USDT")
+        sys.exit(0)
+
+    run_check(send=("--check" not in args))
