@@ -97,7 +97,7 @@ CFG = {
     "max_total_usdt"  : 100.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (10회분, 변동성이 커서 보수적으로)
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
     "guard_leverage"  : False,             # 계정 IRYS 레버리지(수동 포지션용 10배)와 달라도 주문 보류하지 않음
-    "auto_trade"      : False,             # ⚠️ 새 봇이라 False로 시작 — 점검 후 True로 전환
+    "auto_trade"      : True,              # 2026-10-23 실전 가동 (사전 매수 30 USDT 등록 후)
     "state_file"      : "coin_grid_irys_state.json",
 }
 
