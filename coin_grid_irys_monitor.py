@@ -30,7 +30,8 @@
   총 매수 누적액이 max_total_usdt 도달 시 → 매수 중단(매도 감시는 계속)
 
 [비대칭 간격 — 2026-10-23, 사용자 선택]
-  매수는 기준가 -1%(step_pct), 매도는 기준가 +1.5%(sell_step_pct)에서 한다. 이익 폭을 키워 손익비를 높이려는 시도.
+  매수는 기준가 -1%(step_pct)에서 10USDT(order_usdt), 매도는 기준가 +1.5%(sell_step_pct)에서 15USDT(sell_order_usdt)어치를 한다.
+  이익 폭을 키워 손익비를 높이려는 시도. 한 번 팔 때 사는 양보다 크게 파므로 물량이 사는 속도보다 빨리 줄어든다.
   급등 이벤트 42건 24시간 모의(수수료·슬리피지 반영): 손익비 0.37 → 0.45, 거래 승률 75% → 70%, 이벤트당 평균 -0.08 → -0.48 USDT.
   손익비는 좋아졌지만 승률 하락이 더 커서 평균은 나빠지는 쪽이었다(표본 42건이라 통계적 구분은 어렵다). 설정으로 되돌리려면 sell_step_pct=1.0.
 
@@ -122,6 +123,7 @@ CFG = {
     "symbol"          : "IRYS/USDT:USDT",  # 2026-10-23 확인 (Bitget USDT 선물)
     "sell_step_pct"   : 1.5,               # 매도 간격(상승 %) — 2026-10-23 매수 1% / 매도 1.5%로 비대칭 (아래 [비대칭 간격] 참고)
     "step_pct"        : 1.0,               # 그리드 간격 1% (등락이 큰 종목 — 모의 결과로 선택, 위 문서 참고)
+    "sell_order_usdt" : 15.0,              # 1회 매도 금액(명목 USDT) — 매수 10 / 매도 15 (2026-10-23, 아래 [비대칭 간격] 참고)
     "order_usdt"      : 10.0,              # 1회 매수/매도 금액(명목 USDT)
     "max_total_usdt"  : 100.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (10회분, 변동성이 커서 보수적으로)
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
@@ -556,12 +558,12 @@ def run_check(send: bool = True):
                 msg = f"❌ <b>{CFG['symbol']} 매수 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
 
     elif action == "sell":
-        qty_to_sell = (CFG["order_usdt"] * CFG["leverage"]) / price
+        qty_to_sell = (CFG.get("sell_order_usdt", CFG["order_usdt"]) * CFG["leverage"]) / price
         have_q = state.get("qty", 0.0)
         sell_all = have_q - qty_to_sell < qty_to_sell * 0.5     # 남는 게 한 칸의 절반 미만이면 전량 (잔량이 영영 못 팔리는 것 방지)
         if sell_all:
             qty_to_sell = have_q
-        ok, detail, qty, info = place_order(CFG["symbol"], "sell", CFG["order_usdt"], price,
+        ok, detail, qty, info = place_order(CFG["symbol"], "sell", CFG.get("sell_order_usdt", CFG["order_usdt"]), price,
                                              reduce_only=True, dry_run=not send,
                                              qty_override=qty_to_sell if sell_all else None)
         if ok:
@@ -569,7 +571,7 @@ def run_check(send: bool = True):
             _acct_sell(state, actual_qty, info.get("avg_price", price), info.get("fee"))
             ref_before = state.get("reference_price") or price   # 이번 매도의 기준(직전 기준가)
             state["qty"] = max(0.0, state.get("qty", 0.0) - actual_qty)
-            state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG["order_usdt"])
+            state["holdings_usdt"] = max(0.0, state.get("holdings_usdt", 0.0) - CFG.get("sell_order_usdt", CFG["order_usdt"]))
             if state["qty"] <= 1e-9:
                 state["holdings_usdt"] = 0.0
             state["reference_price"] = price   # 래칫: 기준가를 더 위로
