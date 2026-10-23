@@ -112,7 +112,7 @@ CFG = {
     "trail_exit_pct"  : 12.0,              # 고점 대비 -12% 하락 시 봇 물량 전량 청산 후 정지 (급등 종목용, 위 [고점 청산] 참고)
     "stop_loss"       : False,             # 2026-10-23 끔 — 고점 청산으로 대체 (켜면 단계 손절+숏 모드 동작, 아래 설명)
     "stop_loss_frac"  : 0.10,              # 손절 시작 시점 보유 수량의 10%씩 (매번 같은 수량)
-    "auto_trade"      : False,             # ⚠️ 새 봇이라 False로 시작 — 사용자가 30USDT 사전 매수 후 승인하면 True로 전환
+    "auto_trade"      : True,              # 2026-10-23 실전 가동 (사용자 사전 매수 30USDT 등록 후)
     "state_file"      : "coin_grid_btc_state.json",
 }
 
