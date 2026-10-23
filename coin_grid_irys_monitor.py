@@ -29,6 +29,11 @@
     +1% 상승 → 보유 중이면 10USDT어치 매도, 기준가를 그 가격으로 갱신(더 위로 래칫)
   총 매수 누적액이 max_total_usdt 도달 시 → 매수 중단(매도 감시는 계속)
 
+[비대칭 간격 — 2026-10-23, 사용자 선택]
+  매수는 기준가 -1%(step_pct), 매도는 기준가 +1.5%(sell_step_pct)에서 한다. 이익 폭을 키워 손익비를 높이려는 시도.
+  급등 이벤트 42건 24시간 모의(수수료·슬리피지 반영): 손익비 0.37 → 0.45, 거래 승률 75% → 70%, 이벤트당 평균 -0.08 → -0.48 USDT.
+  손익비는 좋아졌지만 승률 하락이 더 커서 평균은 나빠지는 쪽이었다(표본 42건이라 통계적 구분은 어렵다). 설정으로 되돌리려면 sell_step_pct=1.0.
+
 [고점 청산 — 2026-10-23 추가, 급등탐지 종목용]
   급등한 종목은 더 오른 뒤 24시간 안에 급락하는 경우가 많아서, 봇이 시작된 뒤의 최고가(peak_price)를 기록해 두고
   현재가가 고점 대비 -12%(trail_exit_pct) 이하로 내려가면 봇이 가진 물량(state의 qty)을 전량 시장가(reduce-only)로 청산하고
@@ -115,6 +120,7 @@ def _record(side: str, time_str: str, price: float, note: str = ""):
 # ══════════════════════════════════════════════════════
 CFG = {
     "symbol"          : "IRYS/USDT:USDT",  # 2026-10-23 확인 (Bitget USDT 선물)
+    "sell_step_pct"   : 1.5,               # 매도 간격(상승 %) — 2026-10-23 매수 1% / 매도 1.5%로 비대칭 (아래 [비대칭 간격] 참고)
     "step_pct"        : 1.0,               # 그리드 간격 1% (등락이 큰 종목 — 모의 결과로 선택, 위 문서 참고)
     "order_usdt"      : 10.0,              # 1회 매수/매도 금액(명목 USDT)
     "max_total_usdt"  : 100.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (10회분, 변동성이 커서 보수적으로)
@@ -405,7 +411,7 @@ def check_grid(state: dict, price: float) -> dict:
 
     step = CFG["step_pct"] / 100
     drop_trigger = ref * (1 - step)
-    rise_trigger = ref * (1 + step)
+    rise_trigger = ref * (1 + CFG.get("sell_step_pct", CFG["step_pct"]) / 100)
 
     if price <= drop_trigger:
         invested = state.get("holdings_usdt", 0.0)
@@ -425,7 +431,7 @@ def check_grid(state: dict, price: float) -> dict:
         qty_needed = (CFG["order_usdt"] * CFG["leverage"]) / price
         if state.get("qty", 0.0) <= 0:
             return {"action": "sell_blocked", "reason": "보유 수량 부족 — 매도할 물량 없음"}
-        return {"action": "sell", "reason": f"기준가 {ref:,.4f} 대비 +{CFG['step_pct']:.0f}% 도달"}
+        return {"action": "sell", "reason": f"기준가 {ref:,.4f} 대비 +{CFG.get('sell_step_pct', CFG['step_pct']):g}% 도달"}
 
     return {"action": None, "reason": f"대기 (기준가 {ref:,.4f}, "
             f"매수트리거 {drop_trigger:,.4f} / 매도트리거 {rise_trigger:,.4f})"}
@@ -572,7 +578,7 @@ def run_check(send: bool = True):
             leg_ret = (fill_price - ref_before) / ref_before * 100
             leg_profit = actual_qty * (fill_price - ref_before)
             est_note = " (추정치)" if info.get("estimated") else ""
-            msg = (f"🔴 <b>{CFG['symbol']} 매도</b> ({CFG['step_pct']:.0f}% 상승)\n"
+            msg = (f"🔴 <b>{CFG['symbol']} 매도</b> ({CFG.get('sell_step_pct', CFG['step_pct']):g}% 상승)\n"
                    f"💰 매도 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"
                    f"💵 체결가: {info.get('avg_price', price):,.4f} USDT\n"
                    f"📦 수량: {info.get('filled_qty', qty_to_sell):.6f}개\n"
