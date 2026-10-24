@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 *.json
+!coin_grid_presets/*.json   # 보관용 전략 프리셋은 추적한다
 .DS_Store
 
 # 거래 원장 / 자동생성 엑셀 — 서버에서 계속 갱신되는 데이터라 git 추적 제외
