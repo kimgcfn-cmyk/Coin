@@ -1,90 +1,46 @@
 """
-코인 그리드매매 실전 자동매매 — "떨사오팔" 전략 (BIRBUSDT)
-============================================================
-coin_grid_irys_monitor.py(IRYS)를 그대로 따른 BIRB용 봇 (2026-10-23).
-기준가 대비 -1% 하락마다 10USDT 매수, +1% 상승마다 10USDT 매도를 반복하고,
-고점 대비 -12% 하락하면 봇 물량을 전량 청산하고 정지한다.
-급등탐지봇이 알려주는 종목에 쓰려는 전략이라, 종목만 바꿔 쓰기 쉽게 CFG의 symbol/state_file만 다르다.
+코인 그리드매매 범용 봇 — "떨사오팔" 전략 (Bitget USDT-M 선물, 통합계정/UTA, 헤지 모드)
+=================================================================================
+종목을 --symbol 로 지정해서 어떤 코인에든 쓸 수 있다. IRYS/BIRB/BTC/MUSDT 봇으로 검증한 전략을 하나로 합친 것 (2026-10-25).
 
-[BIRB 특성 — 설정 시 참고]
-  최근까지 거래대금이 매우 작다가(하루 2만~14만 USDT) 10/20부터 수백만 USDT로 커진 종목이다.
-  호가가 얇을 때는 시장가 체결이 밀릴 수 있다. 펀딩비가 크게 음수(-0.02)라 롱은 받고 숏은 낸다.
-  과거 20일 모의(롱 그리드만, 1회 10USDT, 한도 100): 1% +17 / 2% +22 / 3% +23 USDT. IRYS와 같은 1%로 시작했다.
-  급등 이벤트 42건 24시간 모의에서 고점 -12% 청산은 최악 손실을 -21.7 → -8.3 USDT로 줄이고 평균 수익은 줄였다(-8%로 바꿨다가 청산선이 너무 가까워 사용자 지시로 -12%로 되돌림, 2026-10-23).
+[실행]
+  python coin_grid_bot.py --symbol ABC --check             # 1회 점검, 주문·상태 저장 없음
+  python coin_grid_bot.py --symbol ABC                     # 모의(paper) 모드 — auto_trade=False라서 주문은 안 나가고 추정 체결로 상태만 움직임
+  python coin_grid_bot.py --symbol ABC --live              # 실전 주문 (cron에는 반드시 --live를 넣는다)
+  python coin_grid_bot.py --symbol ABC --status | --resume | --reset
+  python coin_grid_bot.py --symbol ABC --set max_total_usdt=100 --set order_usdt=10   # CFG 값을 이 실행에만 덮어쓰기(JSON 값)
+  python coin_grid_bot.py --find-symbol ABC                # 거래소에서 심볼 이름 확인
+  --symbol 은 ABC / ABCUSDT / ABC/USDT:USDT 어느 형식이든 된다. 상태 파일은 coin_grid_<abc>_state.json, 원장은 <abc>_ledger.csv.
+  cron 예시(1분마다):  * * * * * cd /home/ec2-user/trading-bot && flock -n /tmp/coin_grid_abc.lock venv/bin/python coin_grid_bot.py --symbol ABC --live >> logs/coin_grid_abc.log 2>&1
+  ⚠️ 시작 전: 계정의 해당 종목 레버리지를 1배(교차)로 맞추고(봇은 바꾸지 않는다), 포지션·미체결 주문이 없는지 확인한다.
 
-[계정 레버리지]
-  이 종목의 계정 레버리지는 처음 10배(교차)였고 2026-10-23 사용자 지시로 1배로 바꿨다. 봇은 주문 금액을 명목 10USDT로 계산하므로
-  수량은 레버리지와 무관하지만, 증거금이 묶이는 크기와 청산 거리가 달라진다. 
-  봇은 레버리지를 확인하지도 바꾸지도 않는다(guard_leverage=False).
+[전략 구성 — 모두 CFG로 켜고 끈다]
+  1) 그리드: 기준가 대비 -1%(step_pct)마다 20USDT(order_usdt) 매수, +1.5%(sell_step_pct)마다 30USDT(sell_order_usdt) 매도.
+     체결 가격이 새 기준가(래칫). 총 매수 누적은 max_total_usdt(200)까지. 봇이 직접 산 물량(state의 qty)만 reduce-only로 판다.
+     봇 물량이 0이면 기준가를 가격 상승에 따라 올린다(그래야 직전 고가 -1%에서 다시 산다).
+  2) 급등 모드(surge_mode): 1분 저점 대비 +3%(surge_pct, surge_window_min) 상승이면 급등으로 보고 30USDT(surge_chase_usdt) 추격 매수.
+     급등 중에는 그리드 매도·신규 매수를 멈추고 물량을 들고 간다. 급등 고점 대비 -3/-4.5/-6%(surge_ladder)에서 1/3씩 나눠 판다.
+     각 단계는 선 아래에 3번 연속 점검(surge_confirm_min)해야 팔고 한 번에 한 단계만 판다(가짜 내림 신호 방지).
+     거래량 필터(surge_vol_ratio, 0=끔): 켜면 최근 5분 거래량이 직전 100분의 5분 평균 대비 N배 이상일 때만 급등으로 인정.
+  3) 급락 대응(crash_mode): 5분 안에 -8%(crash_pct) 이상 급락하면 신규 매수만 중단. 저점 +2% 반등 또는 30분간 새 저점 없으면 재개.
+  4) 신규 매수 중단(trail_action="pause_buy"): 고점 대비 -15%(trail_exit_pct) 아래면 신규 매수 중단, 보유분은 반등 때만 판다.
+     보유분이 모두 팔리면 자동 재개. "liquidate"로 바꾸면 전량 청산 후 정지.
+  5) 안전장치: 거래소에 닫을 롱이 없으면(25227) 봇 장부를 0으로 정정, 시세 조회 실패는 건너뜀, 40762(잔고 부족) 알림 생략.
+  6) 알림(Discord): 체결마다 누적 수익(실현/평가/합계, 수수료 반영, 평균단가 방식) 표시.
 
-[급락 대응 — 2026-10-24]
-  5분 안에 고점 대비 -8% 이상 급락하면 신규 매수만 멈춘다(보유분 매도는 그대로). 급락 저점 대비 +2% 반등하거나 30분 동안 새 저점이 없으면
-  기준가를 현재가로 새로 잡고 매수를 재개한다. 급락 중에는 매수 트리거에 닿아도 사지 않고 기준가만 따라 내린다.
-  (최근 20시간 모의: -8%/5분 매수 중단은 두 종목 합계가 대응 없음과 거의 같고 IRYS 최대 낙폭이 -46→-27 USDT로 줄었다)
+[이 전략이 맞는 종목 / 안 맞는 종목 — 2026-10-23~24 실측·모의 결과]
+  - 잘 맞음: 하루 고저폭이 10% 이상이고 거래량이 큰 종목(급등락이 반복). 완만하게 오르내리는 장.
+  - 안 맞음: BTC처럼 변동이 작은 종목(왕복 비용 약 0.12%가 이익을 먹음, 기대값 ≈ 0). 한 방향으로 계속 내리는 하락 추세(물량이 쌓여 손실).
+  - 강한 한 방향 상승에서는 그냥 보유보다 적게 번다. 하락 추세 대응은 '신규 매수 중단'뿐이라 이익이 나게 해주지는 않는다.
+  - 돌리기 전에 coin_grid_backtest.py 로 최근 구간을 모의하고, 한도(max_total_usdt)는 계좌의 15~20% 이하로 잡는다. 여러 종목 한도 합계는 계좌 총액을 넘기지 않는다.
 
-[급등 모드 — 2026-10-24]
-  [사다리 확인] 각 단계는 매도선 아래에 3번 연속 점검(약 3분) 머물러야 팔고, 한 번에 한 단계만 판다(순간적인 가짜 내림 신호 방지).
-  1분 안에 +3% 이상 오르고 최근 5분 거래량이 직전 100분의 5분 평균의 2배 이상이면 급등으로 보고(가짜 급등 필터), 30USDT를 추격 매수한 뒤(기존 물량과 상관없이 새로 산다; 한도 초과면 건너뜀)
-  그리드 매도(+%)와 신규 매수(-%)를 멈춘 채 봇 물량을 들고 간다.
-  급등 고점 대비 -3%, -4.5%, -6%로 내려올 때마다 급등 시작 때 물량의 1/3씩 시장가로 나눠 팔고(새 고점이 나오면 남은 단계는 새 고점 기준),
-  마지막 단계까지 팔리면 기준가·고점을 현재가로 새로 잡아 그리드로 복귀한다.
-  (추격 매수는 급등 1회당 1번. 거래량 조회에 실패하면 급등으로 보지 않는다.)
+[운영 규칙 — 사용자 지시]
+  - 수동 물량은 봇과 분리한다. 거래소 포지션이 봇 qty보다 크면 그 차이는 사용자 물량이므로 등록·청산하지 않는다.
+    (헤지 모드에서는 같은 방향 포지션이 한 포지션으로 합쳐져, 사용자가 수동으로 전량 청산하면 봇 물량도 같이 사라진다 → 장부 정정이 자동 동작)
+  - auto_trade 꺼진 모의 모드는 안전한 '일시정지'가 아니다(추정 체결로 상태가 움직임). 멈추려면 cron을 주석 처리한다.
+  - 상태 파일을 손으로 고칠 때는 봇의 flock 잠금을 건 상태에서 고친다(덮어쓰기 경쟁 방지).
 
-[기준가 상승 추종 — 2026-10-24]
-  봇 물량이 0이면(다 팔았으면) 기준가를 현재가까지 계속 올린다. 그래야 다시 사는 지점이 '직전 고가의 -1%'가 된다.
-  (이전에는 기준가가 마지막 매도가에 머물러, 가격이 계속 오르면 그 -1%까지 내려와야만 다시 샀다)
-
-[비대칭 간격 — 2026-10-23, 사용자 선택]
-  매수는 기준가 -1%(step_pct)에서 10USDT(order_usdt), 매도는 기준가 +1.5%(sell_step_pct)에서 15USDT(sell_order_usdt)어치를 한다.
-  이익 폭을 키워 손익비를 높이려는 시도. 한 번 팔 때 사는 양보다 크게 파므로 물량이 사는 속도보다 빨리 줄어든다.
-  급등 이벤트 42건 24시간 모의(수수료·슬리피지 반영): 손익비 0.37 → 0.45, 거래 승률 75% → 70%, 이벤트당 평균 -0.08 → -0.48 USDT.
-  손익비는 좋아졌지만 승률 하락이 더 커서 평균은 나빠지는 쪽이었다(표본 42건이라 통계적 구분은 어렵다). 설정으로 되돌리려면 sell_step_pct=1.0.
-
-[고점 청산 → 신규 매수 중단 — 2026-10-24 변경]
-  trail_action="pause_buy": 고점 대비 -N%에 닿으면 전량 청산하지 않고 신규 매수만 멈춘다. 보유분은 기준가(가격을 따라 내려감) +sell_step%에서 팔고,
-  보유분이 모두 팔리면 기준가·고점을 현재가로 새로 잡아 자동으로 매수를 재개한다. (이전 방식은 trail_action="liquidate")
-
-[고점 청산 — 2026-10-23 추가, 급등탐지 종목용 — 현재는 위 pause_buy로 대체]
-  급등한 종목은 더 오른 뒤 24시간 안에 급락하는 경우가 많아서, 봇이 시작된 뒤의 최고가(peak_price)를 기록해 두고
-  현재가가 고점 대비 -12%(trail_exit_pct) 이하로 내려가면 봇이 가진 물량(state의 qty)을 전량 시장가(reduce-only)로 청산하고
-  봇을 정지(halted)한다. 사용자의 다른 수동 물량은 건드리지 않는다. 정지 뒤 다시 시작하려면 --resume.
-  (과거 급등 이벤트 42건 24시간 모의: -12% 기준 최악 손실 -21.7 → -8.3 USDT, 평균 수익은 감소 — 보험 성격. -8%로 바꿨다가 청산선이 가까워 -12%로 되돌림, 2026-10-23)
-
-[손절 — 2026-10-23 추가, 현재 stop_loss=False로 꺼둠]
-  총 투입 한도(max_total_usdt)까지 매수한 뒤에도 반등 없이 기준가 대비 -1% 더 내려가면 손절을 시작한다.
-  손절이 시작된 시점의 보유 수량을 기준으로 -1% 하락할 때마다 그 수량의 10%씩 시장가(reduce-only)로 매도하고,
-  기준가를 그 가격으로 내린다. 남는 물량이 1회 주문 한 칸(10USDT어치) 미만이 되면 전량 정리한다.
-  손절 중에는 신규 매수를 하지 않으며, 가격이 손절 시작 때의 기준가(마지막 매수가)까지 회복하면 손절 모드를 해제하고
-  일반 그리드로 돌아간다. 손절 중 +1% 반등하면 평소처럼 10USDT씩 매도는 계속된다.
-
-[숏 전략 — 2026-10-23 추가, 롱 전략의 정반대]
-  롱 물량을 전부 손절하면 숏 모드로 전환한다(전환 시점 가격이 숏 기준가).
-    기준가 대비 +1% 상승 → 10USDT어치 숏 진입, 기준가를 그 가격으로 갱신(위로 래칫)
-    기준가 대비 -1% 하락 → 10USDT어치 되사서(reduce-only) 숏 청산, 기준가 갱신(아래로 래칫)
-    숏 누적이 max_total_usdt에 차고 +1% 더 오르면 → 숏 손절: 시작 수량의 10%씩 1%마다 되샀다(10번), 신규 숏 중단.
-    손절 중 가격이 손절 시작 기준가까지 내려오면 손절 모드 해제.
-    숏을 전부 손절하면 롱 모드로 복귀(롱 ⇄ 숏 순환).
-    숏 물량이 없는 채 가격이 내려가면 기준가만 따라 내린다(다음 +1% 반등 때 숏 진입).
-  숏 거래는 거래 원장(trade_ledger, 롱 전용 구조)에 기록하지 않고 로그·디스코드로만 남긴다.
-
-[안전장치]
-  - auto_trade 기본값 False (알림만, 실제 주문 없음) — 반드시 --check로
-    충분히 확인 후 True로 전환할 것
-  - max_total_usdt 로 무한 물타기 방지
-  - 실제 주문은 Bitget API(ccxt) 사용, .env의 BITGET_API_KEY 등 필요
-
-[.env 설정 — 이미 있다면 재사용]
-  BITGET_API_KEY=...
-  BITGET_API_SECRET=...
-  BITGET_PASSPHRASE=...
-  DISCORD_WEBHOOK_URL_GRID=... (그리드 전용 디스코드 채널 권장)
-
-실행:
-  python coin_grid_birb_monitor.py --find-symbol   # 정확한 거래 심볼 형식 확인 (최초 1회 필수)
-  python coin_grid_birb_monitor.py --check          # 1회 점검 (주문 없음, 상태 저장도 안 함)
-  python coin_grid_birb_monitor.py                  # 1회 점검 + 신호 발생 시 실행 (cron용)
-  python coin_grid_birb_monitor.py --status          # 현재 보유/기준가 현황
-  python coin_grid_birb_monitor.py --reset           # 상태 초기화 (매매 기록 삭제, 실제 보유는 그대로)
+[파일] coin_grid_bot.py(이 파일) · coin_grid_backtest.py(모의) · trade_ledger.py(원장/엑셀) · coin_surge_monitor.py(급등 탐지 알림)
 """
 
 import sys, json, os, re, time
@@ -121,7 +77,7 @@ def _record(side: str, time_str: str, price: float, note: str = ""):
     if not HAS_LEDGER:
         return
     try:
-        trade_ledger.append_trade("BIRB", side, time_str, price, note)
+        trade_ledger.append_trade(CFG["symbol"].split("/")[0].upper(), side, time_str, price, note)
     except Exception as e:
         print(f"  ⚠️ 거래 기록(엑셀) 실패: {e}")
 
@@ -129,14 +85,14 @@ def _record(side: str, time_str: str, price: float, note: str = ""):
 #  설정 — "떨사오팔" 그리드 파라미터
 # ══════════════════════════════════════════════════════
 CFG = {
-    "symbol"          : "BIRB/USDT:USDT",  # 2026-10-23 확인 (Bitget USDT 선물)
+    "symbol"          : "",              # --symbol 로 채움  # 2026-10-23 확인 (Bitget USDT 선물)
     "sell_step_pct"   : 1.5,               # 매도 간격(상승 %) — 2026-10-23 매수 1% / 매도 1.5%로 비대칭 (아래 [비대칭 간격] 참고)
     "step_pct"        : 1.0,               # 그리드 간격 1% (등락이 큰 종목 — 모의 결과로 선택, 위 문서 참고)
     "sell_order_usdt" : 30.0,              # 1회 매도 금액(명목 USDT) — 매수 20 / 매도 30 (2026-10-24 변동이 커서 2배로 키움; 그 전엔 10/15)
     "order_usdt"      : 20.0,              # 1회 매수 금액(명목 USDT) — 20 (2026-10-24 2배; 그 전엔 10)
     "max_total_usdt"  : 200.0,             # ⚠️ 총 투입 한도 — 무제한 물타기 방지 (2026-10-24 주문 금액 2배에 맞춰 100→200; 매수 20USDT 기준 10회분)
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
-    "guard_leverage"  : False,             # 계정 BIRB 레버리지가 달라도 주문 보류하지 않음
+    "guard_leverage"  : False,             # 계정 레버리지가 달라도 주문 보류하지 않음
     "trail_exit_pct"  : 15.0,              # 고점 대비 -15% 하락 시 봇 물량 전량 청산 후 정지 (BIRB는 2026-10-24 -12%→-15%로 넓힘; 급등 이벤트 모의에서 -15%가 평균 최고)
     "trail_action"    : "pause_buy",       # 고점 하락 시 동작: "pause_buy"=신규 매수 중단+보유분만 매도(물량 0이면 자동 재개), "liquidate"=전량 청산 후 정지 (2026-10-24 pause_buy로 변경)
     "surge_mode"      : True,              # 급등 모드 (2026-10-24): 급등하면 그리드 매도·신규 매수를 멈추고 트레일링으로 판다
@@ -155,8 +111,8 @@ CFG = {
     "surge_vol_lookback_min": 100,
     "stop_loss"       : False,             # 2026-10-23 끔 — 고점 청산으로 대체 (켜면 단계 손절+숏 모드 동작, 아래 설명)
     "stop_loss_frac"  : 0.10,              # 손절 시작 시점 보유 수량의 10%씩 (매번 같은 수량)
-    "auto_trade"      : True,              # 2026-10-23 실전 가동 (계정 레버리지 1배로 맞춘 뒤)
-    "state_file"      : "coin_grid_birb_state.json",
+    "auto_trade"      : False,             # 기본은 모의(paper). 실전은 --live 로 켠다
+    "state_file"      : "",
 }
 
 # ══════════════════════════════════════════════════════
@@ -259,7 +215,7 @@ def check_leverage(ex, symbol: str) -> tuple:
     except Exception as e:
         return False, f"레버리지 확인 실패: {e}"
 
-def find_symbol(keyword: str = "BIRB"):
+def find_symbol(keyword: str = "BTC"):
     """정확한 거래 심볼 형식을 찾는 도구. 최초 1회 반드시 실행 권장."""
     ex = get_exchange()
     if not ex:
@@ -279,7 +235,7 @@ def find_symbol(keyword: str = "BIRB"):
         info = markets[m]
         kind = "선물(swap)" if info.get("swap") else ("현물(spot)" if info.get("spot") else "?")
         print(f"    {m}   [{kind}]")
-    print(f"\n  이 중 정확한 심볼을 CFG['symbol']에 넣으세요 (기본값: BIRB/USDT:USDT 는 2026-10-23 확인된 값입니다).")
+    print(f"\n  이 중 정확한 심볼을 CFG['symbol']에 넣으세요 (기본값: <심볼> 는 2026-10-23 확인된 값입니다).")
 
 def fetch_price(symbol: str) -> float:
     ex = get_exchange()
@@ -760,7 +716,7 @@ def run_check(send: bool = True):
                    f"📈 고점: {peak:,.4f} → 현재가: {price:,.4f} ({(price/peak-1)*100:.1f}%)\n"
                    f"💵 체결가: {fp:,.4f} USDT\n📦 청산 수량: {aq:.6f}개\n"
                    f"💸 직전 기준가 대비 손익(수수료 제외): {pnl:+,.2f} USDT\n{detail}\n"
-                   f"봇은 정지되었습니다. 재개: python coin_grid_birb_monitor.py --resume")
+                   f"봇은 정지되었습니다. 재개: python coin_grid_bot.py --resume")
             msg += _pnl_footer(state, price)
             print(f"  🚨 청산 완료: {detail}")
             if send and have > 0:
@@ -1094,12 +1050,42 @@ def run_short(state: dict, price: float, send: bool, now: str):
 # ══════════════════════════════════════════════════════
 #  실행
 # ══════════════════════════════════════════════════════
+def _normalize_symbol(x: str) -> str:
+    x = x.strip().upper()
+    if "/" in x:
+        return x
+    base = x[:-4] if x.endswith("USDT") else x
+    return f"{base}/USDT:USDT"
+
+def _apply_cli(args: list):
+    """--symbol / --live / --set k=v 를 CFG에 반영. 반환: 종목이 지정됐는지."""
+    if "--symbol" in args:
+        i = args.index("--symbol")
+        if i + 1 >= len(args):
+            print("  ❌ --symbol 뒤에 종목을 적어야 합니다"); sys.exit(1)
+        CFG["symbol"] = _normalize_symbol(args[i + 1])
+        base = CFG["symbol"].split("/")[0].lower()
+        CFG["state_file"] = f"coin_grid_{base}_state.json"
+    for j, a in enumerate(args):
+        if a == "--set" and j + 1 < len(args) and "=" in args[j + 1]:
+            k, v = args[j + 1].split("=", 1)
+            try:
+                CFG[k] = json.loads(v)
+            except ValueError:
+                CFG[k] = v
+    if "--live" in args:
+        CFG["auto_trade"] = True
+    return bool(CFG["symbol"])
+
 if __name__ == "__main__":
     args = sys.argv[1:]
+    if "--find-symbol" not in args and not _apply_cli(args):
+        print("  ❌ 종목을 지정하세요: python coin_grid_bot.py --symbol ABC [--check|--status|--live ...]  (자세한 사용법은 파일 맨 위 설명 참고)")
+        sys.exit(1)
 
     if "--find-symbol" in args:
         idx = args.index("--find-symbol")
-        kw = args[idx+1] if idx+1 < len(args) else "BIRB"
+        kw = args[idx+1] if idx+1 < len(args) else "BTC"
         find_symbol(kw)
         sys.exit(0)
 

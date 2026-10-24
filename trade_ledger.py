@@ -31,6 +31,8 @@ BOTS = {
 FIELDS = ["buy_time", "buy_price", "sell_time", "sell_price", "note"]
 
 def _ledger_path(bot: str) -> str:
+    if bot not in BOTS:   # 범용 그리드 봇(coin_grid_bot.py)의 새 종목은 자동 등록 — 엑셀 시트에는 안 들어가고 CSV 원장만 쌓인다
+        BOTS[bot] = {"ledger": f"{bot.lower()}_ledger.csv", "leverage": 1, "margin": 10.0}
     return os.path.join(LEDGER_DIR, BOTS[bot]["ledger"])
 
 def _load_rows(path: str) -> list:
