@@ -29,6 +29,11 @@
     +1% 상승 → 보유 중이면 10USDT어치 매도, 기준가를 그 가격으로 갱신(더 위로 래칫)
   총 매수 누적액이 max_total_usdt 도달 시 → 매수 중단(매도 감시는 계속)
 
+[급등 모드 — 2026-10-24]
+  5분 안에 +5% 이상 오르면 급등으로 보고 그리드 매도(+%)와 신규 매수(-%)를 멈춘 채 봇 물량을 들고 간다.
+  급등 고점 대비 -3%로 내려오면 봇 물량 전량을 시장가로 매도하고, 기준가·고점을 현재가로 새로 잡아 그리드로 복귀한다.
+  (봇 물량이 없으면 아무것도 사지 않고 -3%에서 모드만 끝낸다. 급등 초입에 올라타는 추가 매수는 하지 않는다.)
+
 [기준가 상승 추종 — 2026-10-24]
   봇 물량이 0이면(다 팔았으면) 기준가를 현재가까지 계속 올린다. 그래야 다시 사는 지점이 '직전 고가의 -1%'가 된다.
   (이전에는 기준가가 마지막 매도가에 머물러, 가격이 계속 오르면 그 -1%까지 내려와야만 다시 샀다)
@@ -138,6 +143,10 @@ CFG = {
     "guard_leverage"  : False,             # 계정 IRYS 레버리지(수동 포지션용 10배)와 달라도 주문 보류하지 않음
     "trail_exit_pct"  : 12.0,              # 고점 대비 -12% 하락 시 봇 물량 전량 청산 후 정지 (급등 종목용, 위 [고점 청산] 참고)
     "trail_action"    : "pause_buy",       # 고점 하락 시 동작: "pause_buy"=신규 매수 중단+보유분만 매도(물량 0이면 자동 재개), "liquidate"=전량 청산 후 정지 (2026-10-24 pause_buy로 변경)
+    "surge_mode"      : True,              # 급등 모드 (2026-10-24): 급등하면 그리드 매도·신규 매수를 멈추고 트레일링으로 판다
+    "surge_pct"       : 5.0,               # 급등 기준: surge_window_min 분 안의 최저가 대비 +5%
+    "surge_window_min": 5,
+    "surge_trail_pct" : 3.0,               # 급등 고점 대비 -3%에 봇 물량 전량 매도 후 그리드로 복귀
     "stop_loss"       : False,             # 2026-10-23 끔 — 고점 청산으로 대체 (켜면 단계 손절+숏 모드 동작, 아래 설명)
     "stop_loss_frac"  : 0.10,              # 손절 시작 시점 보유 수량의 10%씩 (매번 같은 수량)
     "auto_trade"      : True,              # 2026-10-23 실전 가동 (사전 매수 30 USDT 등록 후)
@@ -450,6 +459,79 @@ def check_grid(state: dict, price: float) -> dict:
             f"매수트리거 {drop_trigger:,.4f} / 매도트리거 {rise_trigger:,.4f})"}
 
 # ══════════════════════════════════════════════════════
+#  급등 모드 (2026-10-24 추가) — 급등하면 물량을 들고 가다가 꺾이면 트레일링으로 판다
+# ══════════════════════════════════════════════════════
+def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
+    """매 사이클 호출. 급등 모드가 이번 사이클을 처리했으면 True(그리드·고점 로직 건너뜀).
+    - 감지: 최근 surge_window_min분 안의 최저가 대비 현재가가 surge_pct% 이상 올라 있으면 시작
+    - 급등 중: 그리드 매도(+%)와 신규 매수(-%)를 모두 멈추고 급등 고점을 추적
+    - 종료: 고점 대비 -surge_trail_pct% 내려오면 봇 물량 전량 시장가 매도 후 기준가·고점을 현재가로 새로 잡고 그리드 복귀
+    """
+    if not CFG.get("surge_mode"):
+        return False
+    t = time.time()
+    hist = [h for h in state.get("px_hist", []) if t - h[0] <= 900]
+    hist.append([t, price])
+    state["px_hist"] = hist
+    if not state.get("surge"):
+        win = CFG.get("surge_window_min", 5) * 60 + 30
+        lo = min(p for ts, p in hist if t - ts <= win)
+        if price >= lo * (1 + CFG["surge_pct"] / 100):
+            state["surge"] = True
+            state["surge_peak"] = price
+            state["surge_start"] = now
+            held = state.get("qty", 0.0)
+            print(f"  🚀 급등 감지 — {CFG['surge_window_min']}분 저점 {lo:,.4f} → {price:,.4f} (+{(price/lo-1)*100:.1f}%)")
+            if send:
+                send_discord(f"🚀 <b>{CFG['symbol']} 급등 감지</b> (+{(price/lo-1)*100:.1f}%, {CFG['surge_window_min']}분)\n"
+                             f"💵 {lo:,.4f} → {price:,.4f}\n📦 봇 보유 {held:.4f}개\n"
+                             f"그리드 매도·신규 매수를 멈추고, 고점 대비 -{CFG['surge_trail_pct']:g}% 내려오면 전량 매도합니다.")
+            return True
+        return False
+    peak = max(state.get("surge_peak") or price, price)
+    state["surge_peak"] = peak
+    state["peak_price"] = max(state.get("peak_price") or price, price)
+    trail = CFG["surge_trail_pct"] / 100
+    if price > peak * (1 - trail):
+        print(f"  🚀 급등 모드 — 고점 {peak:,.4f}, 현재가 {price:,.4f} ({(price/peak-1)*100:+.1f}%), 매도선 {peak*(1-trail):,.4f}")
+        return True
+    have = state.get("qty", 0.0)
+    msg = None
+    if have > 0:
+        ok, detail, qty, info = place_order(CFG["symbol"], "sell", 0, price, reduce_only=True, dry_run=not send, qty_override=have)
+        if not ok:
+            print(f"  ❌ 급등 트레일 매도 실패: {detail}")
+            if not state.get("surge_fail_notified") and send:
+                send_discord(f"❌ <b>{CFG['symbol']} 급등 트레일 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다")
+                state["surge_fail_notified"] = True
+            return True
+        aq = info.get("filled_qty", have)
+        fp = info.get("avg_price", price)
+        ref_before = state.get("reference_price") or price
+        _acct_sell(state, aq, fp, info.get("fee"))
+        state["qty"] = max(0.0, have - aq)
+        state["holdings_usdt"] = 0.0 if state["qty"] <= 1e-9 else state.get("holdings_usdt", 0.0) * (state["qty"] / have)
+        msg = (f"📉 <b>{CFG['symbol']} 급등 종료 — 트레일 매도</b>\n📈 급등 고점 {peak:,.4f} → {price:,.4f} ({(price/peak-1)*100:.1f}%)\n"
+               f"💵 체결가: {fp:,.4f} USDT\n📦 수량: {aq:.6f}개\n💸 직전 기준가 대비(수수료 제외): {aq * (fp - ref_before):+,.2f} USDT\n{detail}")
+        msg += _pnl_footer(state, price)
+        print(f"  📉 급등 트레일 매도: {detail}")
+        if send:
+            _record("sell", now, price, "급등 트레일")
+    else:
+        msg = f"📉 <b>{CFG['symbol']} 급등 종료</b>\n급등 고점 {peak:,.4f} → {price:,.4f} ({(price/peak-1)*100:.1f}%). 봇 물량이 없어 매도는 없고, 그리드로 복귀합니다."
+        print("  📉 급등 종료 — 물량 없음, 그리드 복귀")
+    for k in ("surge", "surge_peak", "surge_start", "surge_fail_notified"):
+        state.pop(k, None)
+    state["reference_price"] = price
+    state["peak_price"] = price
+    if state.get("qty", 0.0) <= 0:
+        for k in ("buy_paused", "buy_paused_reason"):
+            state.pop(k, None)
+    if msg and send:
+        send_discord(msg)
+    return True
+
+# ══════════════════════════════════════════════════════
 #  메인 점검
 # ══════════════════════════════════════════════════════
 def run_check(send: bool = True):
@@ -471,6 +553,12 @@ def run_check(send: bool = True):
 
     if state.get("halted"):
         print(f"  ⏸️ 봇 정지 상태 ({state.get('halted_reason', '')}) — 재개하려면 --resume")
+        return
+
+    # 급등 모드 — 급등 중이면 그리드·고점 로직을 건너뛴다
+    if surge_step(state, price, send, now):
+        if send:
+            save_state(state)
         return
 
     # 고점 추적 + 고점 대비 하락 시 처리 (trail_action)
@@ -869,7 +957,7 @@ if __name__ == "__main__":
 
     if "--resume" in args:
         st = load_state()
-        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason"):
+        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason", "surge", "surge_peak", "surge_start", "surge_fail_notified", "px_hist"):
             st.pop(k, None)
         px = fetch_price(CFG["symbol"])
         if px > 0:
@@ -896,6 +984,8 @@ if __name__ == "__main__":
                 print(f"  고점: {st['peak_price']:,.4f}  ({'매수중단선' if CFG.get('trail_action') == 'pause_buy' else '청산선'} {st['peak_price']*(1-CFG['trail_exit_pct']/100):,.4f})"
                       f"{'  ⏸️ 신규 매수 중단: ' + st.get('buy_paused_reason', '') if st.get('buy_paused') else ''}"
                       f"{'  ⏸️ 정지: ' + st.get('halted_reason','') if st.get('halted') else ''}")
+            if st.get("surge"):
+                print(f"  🚀 급등 모드: 고점 {st.get('surge_peak', 0):,.4f} (매도선 {st.get('surge_peak', 0)*(1-CFG['surge_trail_pct']/100):,.4f}) — 그리드 매도·신규 매수 중지")
             print(f"  레버리지: {CFG['leverage']}배")
             print(f"  보유 수량: {st.get('qty',0):.4f}")
             print(f"  누적 증거금: {st.get('holdings_usdt',0):.0f} / {CFG['max_total_usdt']:.0f} USDT")
