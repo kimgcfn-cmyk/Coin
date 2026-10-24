@@ -536,6 +536,7 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
             if cu > 0:
                 if state.get("holdings_usdt", 0.0) + cu > CFG["max_total_usdt"]:
                     chase_note = f"\n추격 매수는 한도({CFG['max_total_usdt']:.0f} USDT) 때문에 건너뜁니다."
+                    print(f"  ⚠️ 추격 매수 건너뜀 — 한도({CFG['max_total_usdt']:.0f} USDT) 초과")
                 else:
                     ok, detail, qty, info = place_order(CFG["symbol"], "buy", cu, price, reduce_only=False, dry_run=not send)
                     if ok:
@@ -544,10 +545,12 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
                         state["qty"] = state.get("qty", 0.0) + aq
                         state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + cu
                         chase_note = f"\n🛒 추격 매수 {info.get('cost', 0):,.2f} USDT / {aq:.6f}개 (체결가 {info.get('avg_price', price):,.4f})"
+                        print(f"  🛒 추격 매수 체결: {detail}")
                         if send:
                             _record("buy", now, price, "급등 추격")
                     else:
                         chase_note = f"\n❌ 추격 매수 실패: {detail}"
+                        print(f"  ❌ 추격 매수 실패: {detail}")
             state["surge_base"] = state.get("qty", 0.0)
             held = state.get("qty", 0.0)
             if send:
