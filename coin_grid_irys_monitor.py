@@ -35,6 +35,7 @@
   (최근 20시간 모의: -8%/5분 매수 중단은 두 종목 합계가 대응 없음과 거의 같고 IRYS 최대 낙폭이 -46→-27 USDT로 줄었다)
 
 [급등 모드 — 2026-10-24]
+  [사다리 확인] 각 단계는 매도선 아래에 3번 연속 점검(약 3분) 머물러야 팔고, 한 번에 한 단계만 판다(순간적인 가짜 내림 신호 방지).
   5분 안에 +5% 이상 오르고 최근 5분 거래량이 직전 100분의 5분 평균의 2배 이상이면 급등으로 보고(가짜 급등 필터), 30USDT를 추격 매수한 뒤(기존 물량과 상관없이 새로 산다; 한도 초과면 건너뜀)
   그리드 매도(+%)와 신규 매수(-%)를 멈춘 채 봇 물량을 들고 간다.
   급등 고점 대비 -3%, -4.5%, -6%로 내려올 때마다 급등 시작 때 물량의 1/3씩 시장가로 나눠 팔고(새 고점이 나오면 남은 단계는 새 고점 기준),
@@ -155,6 +156,7 @@ CFG = {
     "surge_window_min": 5,
     "surge_trail_pct" : 3.0,               # (ladder가 없을 때만 쓰는 단일 매도선)
     "surge_ladder"    : [3.0, 4.5, 6.0],   # 급등 고점 대비 -3%, -4.5%, -6%에서 급등 시작 때 물량의 1/3씩 분할 매도 (2026-10-24)
+    "surge_confirm_min": 3,                # 사다리 각 단계는 매도선 아래에 3분 연속(3번 연속 점검) 머물러야 판다 + 한 번에 한 단계만 (가짜 내림 신호 방지, 2026-10-24)
     "crash_mode"      : True,              # 급락 대응 (2026-10-24): 5분 안에 고점 대비 -8% 이상 급락하면 신규 매수만 중단(보유분 매도는 그대로)
     "crash_pct"       : 8.0,
     "crash_window_min": 5,
@@ -576,7 +578,7 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
     msgs = []
 
     def finish():
-        for key in ("surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k"):
+        for key in ("surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k", "surge_below_n"):
             state.pop(key, None)
         state["reference_price"] = price
         state["peak_price"] = price
@@ -594,8 +596,15 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
         else:
             print(f"  🚀 급등 모드(물량 없음) — 고점 {peak:,.4f}, 현재가 {price:,.4f} ({(price/peak-1)*100:+.1f}%)")
         return True
+    confirm = CFG.get("surge_confirm_min", 1)
+    if k < len(ladder) and price <= peak * (1 - ladder[k] / 100):
+        state["surge_below_n"] = state.get("surge_below_n", 0) + 1
+    else:
+        state["surge_below_n"] = 0
     sold_total = 0.0
-    while k < len(ladder) and price <= peak * (1 - ladder[k] / 100) and state.get("qty", 0.0) > 0:
+    sold_one = False
+    while (k < len(ladder) and price <= peak * (1 - ladder[k] / 100) and state.get("qty", 0.0) > 0
+           and state.get("surge_below_n", 0) >= confirm and not sold_one):
         have = state["qty"]
         q = have if k == len(ladder) - 1 else min(base / len(ladder), have)
         if q * price < 6 or have - q < 6 / price:        # 최소 주문금액(5USDT) 미만이 남지 않게 마지막으로 몰아서 판다
@@ -628,6 +637,7 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
         print(f"  📉 급등 분할 매도 {k}/{len(ladder)}: {detail}")
         if send:
             _record("sell", now, price, f"급등 분할 {k}/{len(ladder)}")
+        sold_one = True
     state["surge_k"] = k
     if k >= len(ladder) or state.get("qty", 0.0) <= 0:
         done = True
@@ -640,7 +650,8 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
             send_discord(text)
     elif not done:
         nxt = peak * (1 - ladder[k] / 100) if k < len(ladder) else peak
-        print(f"  🚀 급등 모드 — 고점 {peak:,.4f}, 현재가 {price:,.4f} ({(price/peak-1)*100:+.1f}%), 다음 매도선 {nxt:,.4f} ({k}/{len(ladder)}단계 완료)")
+        wait = f", 이탈 확인 {state.get('surge_below_n', 0)}/{confirm}" if state.get("surge_below_n", 0) > 0 else ""
+        print(f"  🚀 급등 모드 — 고점 {peak:,.4f}, 현재가 {price:,.4f} ({(price/peak-1)*100:+.1f}%), 다음 매도선 {nxt:,.4f} ({k}/{len(ladder)}단계 완료{wait})")
     if done:
         finish()
     return True
@@ -1103,7 +1114,7 @@ if __name__ == "__main__":
 
     if "--resume" in args:
         st = load_state()
-        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason", "surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k", "px_hist", "crash_on", "crash_low", "crash_low_t"):
+        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason", "surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k", "surge_below_n", "px_hist", "crash_on", "crash_low", "crash_low_t"):
             st.pop(k, None)
         px = fetch_price(CFG["symbol"])
         if px > 0:
