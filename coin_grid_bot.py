@@ -10,6 +10,7 @@
   python coin_grid_bot.py --symbol ABC --status | --resume | --reset
   python coin_grid_bot.py --symbol ABC --set max_total_usdt=100 --set order_usdt=10   # CFG 값을 이 실행에만 덮어쓰기(JSON 값)
   python coin_grid_bot.py --find-symbol ABC                # 거래소에서 심볼 이름 확인
+  python coin_grid_bot.py --preset irys --check            # 보관된 프리셋(coin_grid_presets/irys.json = IRYS 봇 마지막 설정과 운영 이력) 적용. --symbol 로 다른 종목에 쓸 수도 있다
   --symbol 은 ABC / ABCUSDT / ABC/USDT:USDT 어느 형식이든 된다. 상태 파일은 coin_grid_<abc>_state.json, 원장은 <abc>_ledger.csv.
   cron 예시(1분마다):  * * * * * cd /home/ec2-user/trading-bot && flock -n /tmp/coin_grid_abc.lock venv/bin/python coin_grid_bot.py --symbol ABC --live >> logs/coin_grid_abc.log 2>&1
   ⚠️ 시작 전: 계정의 해당 종목 레버리지를 1배(교차)로 맞추고(봇은 바꾸지 않는다), 포지션·미체결 주문이 없는지 확인한다.
@@ -1058,7 +1059,20 @@ def _normalize_symbol(x: str) -> str:
     return f"{base}/USDT:USDT"
 
 def _apply_cli(args: list):
-    """--symbol / --live / --set k=v 를 CFG에 반영. 반환: 종목이 지정됐는지."""
+    """--preset 이름 / --symbol / --live / --set k=v 를 CFG에 반영. 반환: 종목이 지정됐는지.
+    프리셋은 coin_grid_presets/<이름>.json (이전에 쓰던 종목별 설정을 보관). --symbol 이 있으면 프리셋 종목보다 우선한다."""
+    if "--preset" in args:
+        i = args.index("--preset")
+        if i + 1 >= len(args):
+            print("  ❌ --preset 뒤에 이름을 적어야 합니다 (coin_grid_presets/ 폴더 참고)"); sys.exit(1)
+        pth = os.path.join(os.path.dirname(os.path.abspath(__file__)), "coin_grid_presets", args[i + 1] + ".json")
+        try:
+            pr = json.load(open(pth, encoding="utf-8"))
+        except Exception as e:
+            print(f"  ❌ 프리셋을 읽을 수 없습니다: {pth} ({e})"); sys.exit(1)
+        CFG.update(pr.get("cfg", {}))
+        if pr.get("symbol") and "--symbol" not in args:
+            args = args + ["--symbol", pr["symbol"]]
     if "--symbol" in args:
         i = args.index("--symbol")
         if i + 1 >= len(args):
