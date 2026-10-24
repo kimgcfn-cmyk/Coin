@@ -30,10 +30,11 @@
   총 매수 누적액이 max_total_usdt 도달 시 → 매수 중단(매도 감시는 계속)
 
 [급등 모드 — 2026-10-24]
-  5분 안에 +5% 이상 오르면 급등으로 보고 그리드 매도(+%)와 신규 매수(-%)를 멈춘 채 봇 물량을 들고 간다.
+  5분 안에 +5% 이상 오르고 최근 5분 거래량이 직전 100분의 5분 평균의 5배 이상이면 급등으로 보고(가짜 급등 필터), 30USDT를 추격 매수한 뒤(기존 물량과 상관없이 새로 산다; 한도 초과면 건너뜀)
+  그리드 매도(+%)와 신규 매수(-%)를 멈춘 채 봇 물량을 들고 간다.
   급등 고점 대비 -3%, -4.5%, -6%로 내려올 때마다 급등 시작 때 물량의 1/3씩 시장가로 나눠 팔고(새 고점이 나오면 남은 단계는 새 고점 기준),
   마지막 단계까지 팔리면 기준가·고점을 현재가로 새로 잡아 그리드로 복귀한다.
-  (봇 물량이 없으면 아무것도 사지 않고 -3%에서 모드만 끝낸다. 급등 초입에 올라타는 추가 매수는 하지 않는다.)
+  (추격 매수는 급등 1회당 1번. 거래량 조회에 실패하면 급등으로 보지 않는다.)
 
 [기준가 상승 추종 — 2026-10-24]
   봇 물량이 0이면(다 팔았으면) 기준가를 현재가까지 계속 올린다. 그래야 다시 사는 지점이 '직전 고가의 -1%'가 된다.
@@ -149,6 +150,9 @@ CFG = {
     "surge_window_min": 5,
     "surge_trail_pct" : 3.0,               # (ladder가 없을 때만 쓰는 단일 매도선)
     "surge_ladder"    : [3.0, 4.5, 6.0],   # 급등 고점 대비 -3%, -4.5%, -6%에서 급등 시작 때 물량의 1/3씩 분할 매도 (2026-10-24)
+    "surge_chase_usdt": 30.0,              # 급등 감지 시 추격 매수 금액(명목 USDT) — 급등 1회당 1번, 기존 물량과 상관없이 새로 산다 (2026-10-24)
+    "surge_vol_ratio" : 5.0,               # 가짜 급등 필터: 최근 5분 거래량이 직전 100분의 5분 평균 대비 5배 이상일 때만 급등으로 인정
+    "surge_vol_lookback_min": 100,
     "stop_loss"       : False,             # 2026-10-23 끔 — 고점 청산으로 대체 (켜면 단계 손절+숏 모드 동작, 아래 설명)
     "stop_loss_frac"  : 0.10,              # 손절 시작 시점 보유 수량의 10%씩 (매번 같은 수량)
     "auto_trade"      : True,              # 2026-10-23 실전 가동 (사전 매수 30 USDT 등록 후)
@@ -475,6 +479,25 @@ def zero_book(state: dict, why: str) -> str:
 # ══════════════════════════════════════════════════════
 #  급등 모드 (2026-10-24 추가) — 급등하면 물량을 들고 가다가 꺾이면 트레일링으로 판다
 # ══════════════════════════════════════════════════════
+def surge_volume_ratio():
+    """최근 5분 거래대금 / 직전 surge_vol_lookback_min분의 5분 평균 거래대금. 조회 실패·데이터 부족이면 None."""
+    try:
+        sym = CFG["symbol"].split("/")[0] + "USDT"
+        r = requests.get("https://api.bitget.com/api/v2/mix/market/candles",
+                         params={"symbol": sym, "productType": "USDT-FUTURES", "granularity": "1m", "limit": "150"}, timeout=8).json()
+        rows = sorted((int(x[0]), float(x[6])) for x in (r.get("data") or []))
+        look = CFG.get("surge_vol_lookback_min", 100)
+        if len(rows) < 40:
+            return None
+        recent = sum(v for _, v in rows[-5:])
+        prior = [v for _, v in rows[-5 - look:-5]]
+        if len(prior) < 30 or sum(prior) <= 0:
+            return None
+        return recent / (sum(prior) / len(prior) * 5)
+    except Exception as e:
+        print(f"  ⚠️ 거래량 조회 실패: {e}")
+        return None
+
 def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
     """매 사이클 호출. 급등 모드가 이번 사이클을 처리했으면 True(그리드·고점 로직 건너뜀).
     - 감지: 최근 surge_window_min분 안의 최저가 대비 현재가가 surge_pct% 이상 올라 있으면 시작
@@ -494,17 +517,39 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
         win = CFG.get("surge_window_min", 5) * 60 + 30
         lo = min(p for ts, p in hist if t - ts <= win)
         if price >= lo * (1 + CFG["surge_pct"] / 100):
+            vr = surge_volume_ratio() if CFG.get("surge_vol_ratio") else 999.0
+            if vr is None or vr < CFG.get("surge_vol_ratio", 0):
+                print(f"  ↗️ 5분 +{(price/lo-1)*100:.1f}% 상승이지만 거래량 {('조회 실패' if vr is None else f'{vr:.1f}배')} (<{CFG.get('surge_vol_ratio')}배) — 급등으로 보지 않음")
+                return False
             state["surge"] = True
             state["surge_peak"] = price
             state["surge_start"] = now
-            state["surge_base"] = state.get("qty", 0.0)
             state["surge_k"] = 0
-            held = state.get("qty", 0.0)
             lad = " / ".join(f"-{x:g}%" for x in ladder)
-            print(f"  🚀 급등 감지 — {CFG['surge_window_min']}분 저점 {lo:,.4f} → {price:,.4f} (+{(price/lo-1)*100:.1f}%)")
+            print(f"  🚀 급등 감지 — {CFG['surge_window_min']}분 저점 {lo:,.4f} → {price:,.4f} (+{(price/lo-1)*100:.1f}%), 거래량 {vr:.1f}배")
+            held0 = state.get("qty", 0.0)
+            chase_note = ""
+            cu = CFG.get("surge_chase_usdt", 0.0)
+            if cu > 0:
+                if state.get("holdings_usdt", 0.0) + cu > CFG["max_total_usdt"]:
+                    chase_note = f"\n추격 매수는 한도({CFG['max_total_usdt']:.0f} USDT) 때문에 건너뜁니다."
+                else:
+                    ok, detail, qty, info = place_order(CFG["symbol"], "buy", cu, price, reduce_only=False, dry_run=not send)
+                    if ok:
+                        aq = info.get("filled_qty", qty)
+                        _acct_buy(state, aq, info.get("avg_price", price), info.get("fee"))
+                        state["qty"] = state.get("qty", 0.0) + aq
+                        state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + cu
+                        chase_note = f"\n🛒 추격 매수 {info.get('cost', 0):,.2f} USDT / {aq:.6f}개 (체결가 {info.get('avg_price', price):,.4f})"
+                        if send:
+                            _record("buy", now, price, "급등 추격")
+                    else:
+                        chase_note = f"\n❌ 추격 매수 실패: {detail}"
+            state["surge_base"] = state.get("qty", 0.0)
+            held = state.get("qty", 0.0)
             if send:
-                send_discord(f"🚀 <b>{CFG['symbol']} 급등 감지</b> (+{(price/lo-1)*100:.1f}%, {CFG['surge_window_min']}분)\n"
-                             f"💵 {lo:,.4f} → {price:,.4f}\n📦 봇 보유 {held:.4f}개\n"
+                send_discord(f"🚀 <b>{CFG['symbol']} 급등 감지</b> (+{(price/lo-1)*100:.1f}%, {CFG['surge_window_min']}분, 거래량 {vr:.1f}배)\n"
+                             f"💵 {lo:,.4f} → {price:,.4f}\n📦 봇 보유 {held0:.4f}개 → {held:.4f}개{chase_note}\n"
                              f"그리드 매도·신규 매수를 멈추고, 급등 고점 대비 {lad}에서 {len(ladder)}번에 나눠 매도합니다.")
             return True
         return False
