@@ -151,7 +151,7 @@ CFG = {
     "surge_trail_pct" : 3.0,               # (ladder가 없을 때만 쓰는 단일 매도선)
     "surge_ladder"    : [3.0, 4.5, 6.0],   # 급등 고점 대비 -3%, -4.5%, -6%에서 급등 시작 때 물량의 1/3씩 분할 매도 (2026-10-24)
     "surge_chase_usdt": 30.0,              # 급등 감지 시 추격 매수 금액(명목 USDT) — 급등 1회당 1번, 기존 물량과 상관없이 새로 산다 (2026-10-24)
-    "surge_vol_ratio" : 2.0,               # 가짜 급등 필터: 최근 5분 거래량이 직전 100분의 5분 평균 대비 2배 이상일 때만 급등으로 인정 (2026-10-24 3배→2배)
+    "surge_vol_ratio" : 0,                 # 가짜 급등 필터(거래량 배수). 0 = 끔 — IRYS는 2026-10-24 사용자 지시로 끔(5·3·2배 순으로 낮췄으나 폭등 초입을 놓침). 켜면 최근 5분 거래량이 직전 100분의 5분 평균 대비 N배 이상일 때만 급등으로 인정
     "surge_vol_lookback_min": 100,
     "stop_loss"       : False,             # 2026-10-23 끔 — 고점 청산으로 대체 (켜면 단계 손절+숏 모드 동작, 아래 설명)
     "stop_loss_frac"  : 0.10,              # 손절 시작 시점 보유 수량의 10%씩 (매번 같은 수량)
@@ -521,12 +521,13 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
             if vr is None or vr < CFG.get("surge_vol_ratio", 0):
                 print(f"  ↗️ 5분 +{(price/lo-1)*100:.1f}% 상승이지만 거래량 {('조회 실패' if vr is None else f'{vr:.1f}배')} (<{CFG.get('surge_vol_ratio')}배) — 급등으로 보지 않음")
                 return False
+            vtxt = "거래량 필터 꺼짐" if vr >= 999 else f"거래량 {vr:.1f}배"
             state["surge"] = True
             state["surge_peak"] = price
             state["surge_start"] = now
             state["surge_k"] = 0
             lad = " / ".join(f"-{x:g}%" for x in ladder)
-            print(f"  🚀 급등 감지 — {CFG['surge_window_min']}분 저점 {lo:,.4f} → {price:,.4f} (+{(price/lo-1)*100:.1f}%), 거래량 {vr:.1f}배")
+            print(f"  🚀 급등 감지 — {CFG['surge_window_min']}분 저점 {lo:,.4f} → {price:,.4f} (+{(price/lo-1)*100:.1f}%), {vtxt}")
             held0 = state.get("qty", 0.0)
             chase_note = ""
             cu = CFG.get("surge_chase_usdt", 0.0)
@@ -548,7 +549,7 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
             state["surge_base"] = state.get("qty", 0.0)
             held = state.get("qty", 0.0)
             if send:
-                send_discord(f"🚀 <b>{CFG['symbol']} 급등 감지</b> (+{(price/lo-1)*100:.1f}%, {CFG['surge_window_min']}분, 거래량 {vr:.1f}배)\n"
+                send_discord(f"🚀 <b>{CFG['symbol']} 급등 감지</b> (+{(price/lo-1)*100:.1f}%, {CFG['surge_window_min']}분, {vtxt})\n"
                              f"💵 {lo:,.4f} → {price:,.4f}\n📦 봇 보유 {held0:.4f}개 → {held:.4f}개{chase_note}\n"
                              f"그리드 매도·신규 매수를 멈추고, 급등 고점 대비 {lad}에서 {len(ladder)}번에 나눠 매도합니다.")
             return True

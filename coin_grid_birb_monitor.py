@@ -509,12 +509,13 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
             if vr is None or vr < CFG.get("surge_vol_ratio", 0):
                 print(f"  ↗️ 5분 +{(price/lo-1)*100:.1f}% 상승이지만 거래량 {('조회 실패' if vr is None else f'{vr:.1f}배')} (<{CFG.get('surge_vol_ratio')}배) — 급등으로 보지 않음")
                 return False
+            vtxt = "거래량 필터 꺼짐" if vr >= 999 else f"거래량 {vr:.1f}배"
             state["surge"] = True
             state["surge_peak"] = price
             state["surge_start"] = now
             state["surge_k"] = 0
             lad = " / ".join(f"-{x:g}%" for x in ladder)
-            print(f"  🚀 급등 감지 — {CFG['surge_window_min']}분 저점 {lo:,.4f} → {price:,.4f} (+{(price/lo-1)*100:.1f}%), 거래량 {vr:.1f}배")
+            print(f"  🚀 급등 감지 — {CFG['surge_window_min']}분 저점 {lo:,.4f} → {price:,.4f} (+{(price/lo-1)*100:.1f}%), {vtxt}")
             held0 = state.get("qty", 0.0)
             chase_note = ""
             cu = CFG.get("surge_chase_usdt", 0.0)
@@ -536,7 +537,7 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
             state["surge_base"] = state.get("qty", 0.0)
             held = state.get("qty", 0.0)
             if send:
-                send_discord(f"🚀 <b>{CFG['symbol']} 급등 감지</b> (+{(price/lo-1)*100:.1f}%, {CFG['surge_window_min']}분, 거래량 {vr:.1f}배)\n"
+                send_discord(f"🚀 <b>{CFG['symbol']} 급등 감지</b> (+{(price/lo-1)*100:.1f}%, {CFG['surge_window_min']}분, {vtxt})\n"
                              f"💵 {lo:,.4f} → {price:,.4f}\n📦 봇 보유 {held0:.4f}개 → {held:.4f}개{chase_note}\n"
                              f"그리드 매도·신규 매수를 멈추고, 급등 고점 대비 {lad}에서 {len(ladder)}번에 나눠 매도합니다.")
             return True
