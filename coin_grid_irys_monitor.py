@@ -29,6 +29,11 @@
     +1% 상승 → 보유 중이면 10USDT어치 매도, 기준가를 그 가격으로 갱신(더 위로 래칫)
   총 매수 누적액이 max_total_usdt 도달 시 → 매수 중단(매도 감시는 계속)
 
+[급락 대응 — 2026-10-24]
+  5분 안에 고점 대비 -8% 이상 급락하면 신규 매수만 멈춘다(보유분 매도는 그대로). 급락 저점 대비 +2% 반등하거나 30분 동안 새 저점이 없으면
+  기준가를 현재가로 새로 잡고 매수를 재개한다. 급락 중에는 매수 트리거에 닿아도 사지 않고 기준가만 따라 내린다.
+  (최근 20시간 모의: -8%/5분 매수 중단은 두 종목 합계가 대응 없음과 거의 같고 IRYS 최대 낙폭이 -46→-27 USDT로 줄었다)
+
 [급등 모드 — 2026-10-24]
   5분 안에 +5% 이상 오르고 최근 5분 거래량이 직전 100분의 5분 평균의 2배 이상이면 급등으로 보고(가짜 급등 필터), 30USDT를 추격 매수한 뒤(기존 물량과 상관없이 새로 산다; 한도 초과면 건너뜀)
   그리드 매도(+%)와 신규 매수(-%)를 멈춘 채 봇 물량을 들고 간다.
@@ -150,6 +155,11 @@ CFG = {
     "surge_window_min": 5,
     "surge_trail_pct" : 3.0,               # (ladder가 없을 때만 쓰는 단일 매도선)
     "surge_ladder"    : [3.0, 4.5, 6.0],   # 급등 고점 대비 -3%, -4.5%, -6%에서 급등 시작 때 물량의 1/3씩 분할 매도 (2026-10-24)
+    "crash_mode"      : True,              # 급락 대응 (2026-10-24): 5분 안에 고점 대비 -8% 이상 급락하면 신규 매수만 중단(보유분 매도는 그대로)
+    "crash_pct"       : 8.0,
+    "crash_window_min": 5,
+    "crash_rebound_pct": 2.0,              # 급락 저점 대비 +2% 반등하면 매수 재개
+    "crash_quiet_min" : 30,                # 또는 30분 동안 새 저점이 없으면 재개
     "surge_chase_usdt": 30.0,              # 급등 감지 시 추격 매수 금액(명목 USDT) — 급등 1회당 1번, 기존 물량과 상관없이 새로 산다 (2026-10-24)
     "surge_vol_ratio" : 0,                 # 가짜 급등 필터(거래량 배수). 0 = 끔 — IRYS는 2026-10-24 사용자 지시로 끔(5·3·2배 순으로 낮췄으나 폭등 초입을 놓침). 켜면 최근 5분 거래량이 직전 100분의 5분 평균 대비 N배 이상일 때만 급등으로 인정
     "surge_vol_lookback_min": 100,
@@ -440,6 +450,8 @@ def check_grid(state: dict, price: float) -> dict:
     rise_trigger = ref * (1 + CFG.get("sell_step_pct", CFG["step_pct"]) / 100)
 
     if price <= drop_trigger:
+        if state.get("crash_on"):
+            return {"action": None, "reason": f"급락 대응 — 신규 매수 중단 중 (저점 {state.get('crash_low', 0):,.4f}, 반등 시 재개)"}
         if state.get("buy_paused"):
             return {"action": None, "reason": f"신규 매수 중단 중({state.get('buy_paused_reason', '')}) — 보유분만 매도 감시 (기준가 {ref:,.4f}, 매도트리거 {rise_trigger:,.4f})"}
         invested = state.get("holdings_usdt", 0.0)
@@ -656,6 +668,35 @@ def run_check(send: bool = True):
     if state.get("halted"):
         print(f"  ⏸️ 봇 정지 상태 ({state.get('halted_reason', '')}) — 재개하려면 --resume")
         return
+
+    # 급락 대응 — 5분 내 -8% 급락이면 신규 매수 중단, 저점 +2% 반등 또는 30분간 새 저점 없으면 재개
+    if CFG.get("crash_mode") and not state.get("surge"):
+        tnow = time.time()
+        hist = [h for h in state.get("px_hist", []) if tnow - h[0] <= CFG["crash_window_min"] * 60 + 30]
+        if not state.get("crash_on"):
+            hi = max([p for _, p in hist] + [price])
+            if price <= hi * (1 - CFG["crash_pct"] / 100):
+                state["crash_on"] = True
+                state["crash_low"] = price
+                state["crash_low_t"] = tnow
+                print(f"  📉 급락 감지 — {CFG['crash_window_min']}분 고점 {hi:,.4f} → {price:,.4f} ({(price/hi-1)*100:.1f}%): 신규 매수 중단")
+                if send:
+                    send_discord(f"📉 <b>{CFG['symbol']} 급락 감지</b> ({(price/hi-1)*100:.1f}%, {CFG['crash_window_min']}분)\n💵 {hi:,.4f} → {price:,.4f}\n"
+                                 f"신규 매수를 멈춥니다(보유분 {state.get('qty', 0.0):.4f}개 매도는 그대로). 저점 대비 +{CFG['crash_rebound_pct']:g}% 반등하거나 {CFG['crash_quiet_min']}분간 새 저점이 없으면 재개합니다.")
+        else:
+            if price < state.get("crash_low", price):
+                state["crash_low"] = price
+                state["crash_low_t"] = tnow
+            low = state["crash_low"]
+            if price >= low * (1 + CFG["crash_rebound_pct"] / 100) or tnow - state.get("crash_low_t", tnow) >= CFG["crash_quiet_min"] * 60:
+                for k in ("crash_on", "crash_low", "crash_low_t"):
+                    state.pop(k, None)
+                state["reference_price"] = price
+                print(f"  ▶️ 급락 진정 — 신규 매수 재개 (저점 {low:,.4f} → {price:,.4f})")
+                if send:
+                    send_discord(f"▶️ <b>{CFG['symbol']} 급락 대응 해제</b>\n저점 {low:,.4f} → 현재가 {price:,.4f}. 신규 매수를 다시 시작합니다(기준가=현재가).")
+            elif state.get("reference_price") and price <= state["reference_price"] * (1 - CFG["step_pct"] / 100):
+                state["reference_price"] = price        # 급락 중에는 매수 대신 기준가만 따라 내린다
 
     # 급등 모드 — 급등 중이면 그리드·고점 로직을 건너뛴다
     if surge_step(state, price, send, now):
@@ -1062,7 +1103,7 @@ if __name__ == "__main__":
 
     if "--resume" in args:
         st = load_state()
-        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason", "surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k", "px_hist"):
+        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason", "surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k", "px_hist", "crash_on", "crash_low", "crash_low_t"):
             st.pop(k, None)
         px = fetch_price(CFG["symbol"])
         if px > 0:
@@ -1089,6 +1130,8 @@ if __name__ == "__main__":
                 print(f"  고점: {st['peak_price']:,.4f}  ({'매수중단선' if CFG.get('trail_action') == 'pause_buy' else '청산선'} {st['peak_price']*(1-CFG['trail_exit_pct']/100):,.4f})"
                       f"{'  ⏸️ 신규 매수 중단: ' + st.get('buy_paused_reason', '') if st.get('buy_paused') else ''}"
                       f"{'  ⏸️ 정지: ' + st.get('halted_reason','') if st.get('halted') else ''}")
+            if st.get("crash_on"):
+                print(f"  📉 급락 대응 중: 저점 {st.get('crash_low', 0):,.4f} — 신규 매수 중단")
             if st.get("surge"):
                 print(f"  🚀 급등 모드: 고점 {st.get('surge_peak', 0):,.4f} (매도선 {st.get('surge_peak', 0)*(1-CFG['surge_trail_pct']/100):,.4f}) — 그리드 매도·신규 매수 중지")
             print(f"  레버리지: {CFG['leverage']}배")
