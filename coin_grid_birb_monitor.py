@@ -446,6 +446,18 @@ def check_grid(state: dict, price: float) -> dict:
     return {"action": None, "reason": f"대기 (기준가 {ref:,.4f}, "
             f"매수트리거 {drop_trigger:,.4f} / 매도트리거 {rise_trigger:,.4f})"}
 
+def no_position_error(detail: str) -> bool:
+    """거래소에 닫을 롱이 없다는 오류(Bitget 25227) — 사용자가 수동으로 청산하는 등 봇 장부보다 거래소 물량이 적을 때."""
+    return "25227" in detail or "No position available to close" in detail
+
+def zero_book(state: dict, why: str) -> str:
+    """거래소에 롱이 없는데 봇 장부에 물량이 남아 있으면 장부를 0으로 정정하고 알림 문구를 돌려준다."""
+    old = state.get("qty", 0.0)
+    state["qty"] = 0.0
+    state["holdings_usdt"] = 0.0
+    return (f"⚠️ <b>{CFG['symbol']} 장부 정정</b>\n{why}\n거래소에 닫을 롱이 없어 봇 장부 {old:.4f}개를 0으로 정정했습니다 "
+            f"(사용자가 수동으로 청산했을 가능성). 이후 매도 재시도는 없습니다.")
+
 # ══════════════════════════════════════════════════════
 #  급등 모드 (2026-10-24 추가) — 급등하면 물량을 들고 가다가 꺾이면 트레일링으로 판다
 # ══════════════════════════════════════════════════════
@@ -487,7 +499,15 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
     msg = None
     if have > 0:
         ok, detail, qty, info = place_order(CFG["symbol"], "sell", 0, price, reduce_only=True, dry_run=not send, qty_override=have)
-        if not ok:
+        if not ok and no_position_error(detail):
+            if send:
+                send_discord(zero_book(state, "급등 트레일 매도가 거절됨(25227)."))
+            else:
+                zero_book(state, "")
+            have = 0.0
+            ok = True
+            aq = 0.0
+        elif not ok:
             print(f"  ❌ 급등 트레일 매도 실패: {detail}")
             if not state.get("surge_fail_notified") and send:
                 send_discord(f"❌ <b>{CFG['symbol']} 급등 트레일 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다")
@@ -716,8 +736,11 @@ def run_check(send: bool = True):
             if send:
                 _record("sell", now, price)
         else:
-            msg = f"❌ <b>{CFG['symbol']} 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
             print(f"  ❌ 매도 실패: {detail}")
+            if no_position_error(detail):
+                msg = zero_book(state, "매도 주문이 거절됨(25227).")
+            else:
+                msg = f"❌ <b>{CFG['symbol']} 매도 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
 
     elif action == "stop_loss":
         first = not state.get("stop_active")
