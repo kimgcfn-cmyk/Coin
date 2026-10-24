@@ -1,0 +1,47 @@
+{
+  "name": "irys",
+  "symbol": "IRYS/USDT:USDT",
+  "설명": "IRYS 그리드 봇이 마지막에 쓰던 설정 그대로(2026-10-24). 매수 -1%/20USDT, 매도 +1.5%/30USDT, 1분 +3% 급등 추격 30USDT + 3분 확인 사다리 -3/-4.5/-6%, 5분 -8% 급락 시 신규 매수 중단, 고점 -15%에서 신규 매수 중단, 거래량 필터 끔, 한도 200USDT, 레버리지 1배.",
+  "운영 이력(2026-10-23 11:50 UTC ~ 10-24 13:07 UTC)": {
+    "누적 실현(수수료 반영)": "-17.97 USDT (수수료 2.11)",
+    "흐름": "가동 직후 IRYS가 0.04 → 0.41 폭등 후 0.06 부근까지 급락. 앞 15시간은 +11~+15 USDT까지 쌓였으나 이후 하락장에서 눌림 매수가 쌓여 -29 USDT 반납 후 중지.",
+    "교훈": [
+      "변동이 큰 급등 종목에서 앞 구간은 잘 맞았지만, 한 방향 하락 추세에서는 -1%마다 사는 구조라 손실이 커진다.",
+      "하락 추세에 들어가면 바로 중지하고, 그전에 coin_grid_backtest.py 로 최근 10~20시간을 모의해 추세를 확인한다.",
+      "급등 감지는 1분 +3%(거래량 필터 끔)가 5분 +5%보다 합계가 컸지만 가짜 급등 추격 위험이 있다.",
+      "고점 청산(전량)보다 '신규 매수 중단 + 보유분만 매도'로 바꿨고, 사다리 매도는 3분 확인으로 가짜 내림 신호를 걸렀다."
+    ]
+  },
+  "모의 성과 참고": "최근 20시간 모의에서 합계 약 +62(IRYS 폭등 구간), 같은 전략을 하락 구간(10시간 -45%)에 대면 -64. 구간에 따라 결과가 극단적으로 갈린다.",
+  "cfg": {
+    "sell_step_pct": 1.5,
+    "step_pct": 1.0,
+    "sell_order_usdt": 30.0,
+    "order_usdt": 20.0,
+    "max_total_usdt": 200.0,
+    "leverage": 1,
+    "guard_leverage": false,
+    "trail_exit_pct": 15.0,
+    "trail_action": "pause_buy",
+    "surge_mode": true,
+    "surge_pct": 3.0,
+    "surge_window_min": 1,
+    "surge_trail_pct": 3.0,
+    "surge_ladder": [
+      3.0,
+      4.5,
+      6.0
+    ],
+    "surge_confirm_min": 3,
+    "crash_mode": true,
+    "crash_pct": 8.0,
+    "crash_window_min": 5,
+    "crash_rebound_pct": 2.0,
+    "crash_quiet_min": 30,
+    "surge_chase_usdt": 30.0,
+    "surge_vol_ratio": 0,
+    "surge_vol_lookback_min": 100,
+    "stop_loss": false,
+    "stop_loss_frac": 0.1
+  }
+}
