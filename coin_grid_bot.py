@@ -95,6 +95,7 @@ CFG = {
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
     "guard_leverage"  : False,             # 계정 레버리지가 달라도 주문 보류하지 않음
     "trail_exit_pct"  : 15.0,              # 고점 대비 -15% 하락 시 봇 물량 전량 청산 후 정지 (BIRB는 2026-10-24 -12%→-15%로 넓힘; 급등 이벤트 모의에서 -15%가 평균 최고)
+    "trail_rest_min"  : 0,                 # (trail_action="liquidate"일 때) 고점 청산 후 이 분만큼 쉬고 자동 재개. 0이면 청산 후 정지(--resume 필요). 2026-10-26 CAP용 추가
     "trail_action"    : "pause_buy",       # 고점 하락 시 동작: "pause_buy"=신규 매수 중단+보유분만 매도(물량 0이면 자동 재개), "liquidate"=전량 청산 후 정지 (2026-10-24 pause_buy로 변경)
     "surge_mode"      : True,              # 급등 모드 (2026-10-24): 급등하면 그리드 매도·신규 매수를 멈추고 트레일링으로 판다
     "surge_pct"       : 3.0,               # 급등 기준: surge_window_min 분 안의 최저가 대비 +3% (2026-10-24 5분 +5% → 1분 +3%)
@@ -628,6 +629,19 @@ def run_check(send: bool = True):
         print(f"  ⏸️ 봇 정지 상태 ({state.get('halted_reason', '')}) — 재개하려면 --resume")
         return
 
+    # 고점 청산 후 휴식(trail_rest_min) — 휴식이 끝나면 기준가·고점을 현재가로 새로 잡고 자동 재개
+    if state.get("rest_until"):
+        if time.time() < state["rest_until"]:
+            print(f"  😴 고점 청산 후 휴식 중 — 약 {(state['rest_until'] - time.time()) / 60:.0f}분 뒤 재개 ({state.get('rest_reason', '')})")
+            return
+        for k in ("rest_until", "rest_reason"):
+            state.pop(k, None)
+        state["reference_price"] = price; state["peak_price"] = price
+        print(f"  ▶️ 휴식 끝 — 기준가·고점을 현재가 {price:,.4f}로 새로 잡고 매수를 재개합니다")
+        if send:
+            send_discord(f"▶️ <b>{CFG['symbol']} 휴식 끝 — 매수 재개</b>\n기준가·고점을 현재가 {price:,.4f}로 새로 잡았습니다.")
+            save_state(state)
+
     # 급락 대응 — 5분 내 -8% 급락이면 신규 매수 중단, 저점 +2% 반등 또는 30분간 새 저점 없으면 재개
     if CFG.get("crash_mode") and not state.get("surge"):
         tnow = time.time()
@@ -695,8 +709,11 @@ def run_check(send: bool = True):
         if note_msg and send:
             send_discord(note_msg)
     else:
-        state["peak_price"] = max(state.get("peak_price") or price, price)
-    if trail_mode == "liquidate" and trail and price <= state["peak_price"] * (1 - trail / 100):
+        if CFG.get("trail_rest_min") and state.get("qty", 0.0) <= 0:
+            state["peak_price"] = price          # 휴식 모드: 물량이 없으면 고점도 현재가로 새로 시작(첫 매수 이후의 고점 기준으로 재야 함)
+        else:
+            state["peak_price"] = max(state.get("peak_price") or price, price)
+    if trail_mode == "liquidate" and trail and not (CFG.get("trail_rest_min") and state.get("qty", 0.0) <= 0) and price <= state["peak_price"] * (1 - trail / 100):
         have = state.get("qty", 0.0)
         peak = state["peak_price"]
         print(f"  🚨 고점 {peak:,.4f} 대비 {(price/peak-1)*100:.1f}% — 전량 청산 조건 ({trail:.0f}%)")
@@ -711,13 +728,17 @@ def run_check(send: bool = True):
             if aq > 0:
                 _acct_sell(state, aq, fp, info.get("fee"))
             pnl = aq * (fp - ref_before)
-            state.update({"qty": max(0.0, have - aq), "holdings_usdt": 0.0, "halted": True,
-                          "halted_reason": f"고점 {peak:,.4f} 대비 -{trail:.0f}% 청산 ({now})"})
-            msg = (f"🚨 <b>{CFG['symbol']} 고점 대비 -{trail:.0f}% 전량 청산 후 정지</b>\n"
+            rest_min = CFG.get("trail_rest_min") or 0
+            state.update({"qty": max(0.0, have - aq), "holdings_usdt": 0.0})
+            if rest_min:
+                state.update({"rest_until": time.time() + rest_min * 60, "rest_reason": f"고점 {peak:,.4f} 대비 -{trail:.0f}% 청산 ({now})"})
+            else:
+                state.update({"halted": True, "halted_reason": f"고점 {peak:,.4f} 대비 -{trail:.0f}% 청산 ({now})"})
+            msg = (f"🚨 <b>{CFG['symbol']} 고점 대비 -{trail:.0f}% 전량 청산 후 {'%d분 휴식' % rest_min if rest_min else '정지'}</b>\n"
                    f"📈 고점: {peak:,.4f} → 현재가: {price:,.4f} ({(price/peak-1)*100:.1f}%)\n"
                    f"💵 체결가: {fp:,.4f} USDT\n📦 청산 수량: {aq:.6f}개\n"
                    f"💸 직전 기준가 대비 손익(수수료 제외): {pnl:+,.2f} USDT\n{detail}\n"
-                   f"봇은 정지되었습니다. 재개: python coin_grid_bot.py --resume")
+                   + (f"{rest_min}분 뒤 기준가·고점을 현재가로 새로 잡고 자동 재개합니다." if rest_min else "봇은 정지되었습니다. 재개: python coin_grid_bot.py --resume"))
             msg += _pnl_footer(state, price)
             print(f"  🚨 청산 완료: {detail}")
             if send and have > 0:
@@ -1105,7 +1126,7 @@ if __name__ == "__main__":
 
     if "--resume" in args:
         st = load_state()
-        for k in ("halted", "halted_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason", "surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k", "surge_below_n", "px_hist", "crash_on", "crash_low", "crash_low_t"):
+        for k in ("halted", "halted_reason", "rest_until", "rest_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason", "surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k", "surge_below_n", "px_hist", "crash_on", "crash_low", "crash_low_t"):
             st.pop(k, None)
         px = fetch_price(CFG["symbol"])
         if px > 0:
@@ -1128,6 +1149,8 @@ if __name__ == "__main__":
         else:
             print(f"  모드: {'숏' if st.get('mode') == 'short' else '롱'}")
             print(f"  기준가: {st['reference_price']:,.4f}")
+            if st.get("rest_until"):
+                print(f"  😴 고점 청산 후 휴식 중 — 약 {max(0, (st['rest_until'] - time.time()) / 60):.0f}분 뒤 자동 재개 ({st.get('rest_reason', '')})")
             if st.get("peak_price"):
                 print(f"  고점: {st['peak_price']:,.4f}  ({'매수중단선' if CFG.get('trail_action') == 'pause_buy' else '청산선'} {st['peak_price']*(1-CFG['trail_exit_pct']/100):,.4f})"
                       f"{'  ⏸️ 신규 매수 중단: ' + st.get('buy_paused_reason', '') if st.get('buy_paused') else ''}"
