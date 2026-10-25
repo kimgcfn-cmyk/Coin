@@ -31,6 +31,8 @@ import coin_grid_bot as g
 
 CFG = g.CFG
 CFG.setdefault("short_stop_pct", 10.0)
+CFG.setdefault("rally_fast_pct", 3.0)        # 급등 보호(빠른 쪽): rally_fast_win_min분 안에 이 %만큼 오르면 신규 숏 중단 (0=끔)
+CFG.setdefault("rally_fast_win_min", 1)
 FEE_FB = 0.0006
 
 # ── 숏 장부 (평균 진입가 방식, 수수료 반영) ────────────────────────────
@@ -180,10 +182,15 @@ def run_check(send=True):
         win = CFG["crash_window_min"] * 60 + 30
         if not state.get("rally_on"):
             lo5 = min(p for ts, p in hist if t - ts <= win)
-            if price >= lo5 * (1 + CFG["crash_pct"] / 100):
+            fw = CFG.get("rally_fast_win_min", 1) * 60 + 30
+            lo_f = min(p for ts, p in hist if t - ts <= fw)
+            slow = price >= lo5 * (1 + CFG["crash_pct"] / 100)
+            fast = bool(CFG.get("rally_fast_pct")) and price >= lo_f * (1 + CFG["rally_fast_pct"] / 100)
+            if slow or fast:
+                lo_, wmin = (lo5, CFG["crash_window_min"]) if slow else (lo_f, CFG["rally_fast_win_min"])
                 state.update(rally_on=True, rally_high=price, rally_high_t=t)
-                print(f"  📈 급등 감지 — {CFG['crash_window_min']}분 저점 {lo5:,.6g} → {price:,.6g} (+{(price/lo5-1)*100:.1f}%): 신규 숏 중단")
-                _send(f"📈 <b>{CFG['symbol']} 급등 감지 (숏 전략)</b> (+{(price/lo5-1)*100:.1f}%, {CFG['crash_window_min']}분)\n신규 숏을 멈춥니다(보유 숏 환매는 그대로). 고점 대비 -{CFG['crash_rebound_pct']:g}% 되돌리거나 {CFG['crash_quiet_min']}분간 새 고점이 없으면 재개합니다.", send)
+                print(f"  📈 급등 감지 — {wmin}분 저점 {lo_:,.6g} → {price:,.6g} (+{(price/lo_-1)*100:.1f}%): 신규 숏 중단")
+                _send(f"📈 <b>{CFG['symbol']} 급등 감지 (숏 전략)</b> (+{(price/lo_-1)*100:.1f}%, {wmin}분)\n신규 숏을 멈춥니다(보유 숏 환매는 그대로). 고점 대비 -{CFG['crash_rebound_pct']:g}% 되돌리거나 {CFG['crash_quiet_min']}분간 새 고점이 없으면 재개합니다.", send)
         else:
             if price > state.get("rally_high", price): state.update(rally_high=price, rally_high_t=t)
             hi_ = state["rally_high"]
