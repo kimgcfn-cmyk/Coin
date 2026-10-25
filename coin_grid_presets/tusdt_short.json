@@ -1,0 +1,14 @@
+{
+  "name": "tusdt_short",
+  "symbol": "T/USDT:USDT",
+  "설명": "TUSDT 숏 미러 전략(coin_grid_short_bot.py) 설정 (2026-10-25). 기준가 +1%에 숏 20USDT 진입, -2%에 30USDT 환매, 한도 200USDT(명목), 평균가 +10% 강제 손절. 계정 레버리지는 3배(교차)이며 봇은 명목 기준으로 주문하므로 leverage는 1로 둔다.",
+  "cfg": {
+    "step_pct": 1.0,
+    "sell_step_pct": 2.0,
+    "order_usdt": 20,
+    "sell_order_usdt": 30,
+    "max_total_usdt": 200,
+    "leverage": 1,
+    "short_stop_pct": 10.0
+  }
+}
