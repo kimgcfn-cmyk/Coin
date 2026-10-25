@@ -1,0 +1,14 @@
+{
+  "name": "cap_long",
+  "symbol": "CAP/USDT:USDT",
+  "설명": "CAP 롱 그리드(coin_grid_bot.py) 설정 초안 (2026-10-26). 기준가 -1%에 매수 50USDT, +1.5%에 매도 75USDT, 한도 500USDT(명목), 1분 +3% 급등 추격 매수 75USDT + 3분 확인 사다리(-3/-4.5/-6%), 5분 -8% 급락 시 신규 매수 중단, 고점 -15%에서 신규 매수 중단. 봇은 명목 기준 주문(leverage=1), 계정 레버리지는 별도 설정. 시작 전 CAP 계정 포지션·레버리지 확인 필요.",
+  "cfg": {
+    "step_pct": 1.0,
+    "sell_step_pct": 1.5,
+    "order_usdt": 50,
+    "sell_order_usdt": 75,
+    "max_total_usdt": 500,
+    "leverage": 1,
+    "surge_chase_usdt": 75
+  }
+}
