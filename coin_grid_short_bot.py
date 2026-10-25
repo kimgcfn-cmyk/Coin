@@ -33,7 +33,7 @@ CFG = g.CFG
 CFG.setdefault("short_stop_pct", 10.0)
 CFG.setdefault("rally_fast_pct", 3.0)        # 급등 보호(빠른 쪽): rally_fast_win_min분 안에 이 %만큼 오르면 신규 숏 중단 (0=끔)
 CFG.setdefault("rally_fast_win_min", 1)
-CFG.setdefault("cover_min_profit_pct", 0.2)  # 그리드 환매는 현재가가 평균 진입가보다 이 %만큼 낮을 때만 (0/None=끔). 급락 모드 단계 환매·강제 손절에는 적용 안 함
+CFG.setdefault("cover_min_profit_pct", 0.0)  # 그리드 환매는 현재가가 평균 진입가보다 이 %만큼 낮을 때만 (0/None=끔, 기본 끔). 급락 모드 단계 환매·강제 손절에는 적용 안 함
 FEE_FB = 0.0006
 
 # ── 숏 장부 (평균 진입가 방식, 수수료 반영) ────────────────────────────
