@@ -1,15 +1,15 @@
 {
   "name": "tusdt_short",
   "symbol": "T/USDT:USDT",
-  "설명": "TUSDT 숏 미러 전략(coin_grid_short_bot.py) 설정 (2026-10-25). 기준가 +0.5%에 숏 50USDT 진입, -2%에 200USDT 환매, 한도 1000USDT(명목), 급락 추격 숏 200USDT, 평균가 +10% 강제 손절. 계정 레버리지 5배(교차), 봇은 명목 기준 주문이라 leverage는 1.",
+  "설명": "TUSDT 숏 미러 전략(coin_grid_short_bot.py) 설정 (2026-10-25). 기준가 +0.5%에 숏 50USDT 진입, -1%에 100USDT 환매, 한도 1000USDT(명목), 급락 추격 숏 100USDT, 1분 +3% 급등 시 신규 숏 중단, 평균가 +10% 강제 손절. 계정 레버리지 5배(교차), 봇은 명목 기준 주문이라 leverage는 1.",
   "cfg": {
     "step_pct": 0.5,
-    "sell_step_pct": 2.0,
+    "sell_step_pct": 1.0,
     "order_usdt": 50,
-    "sell_order_usdt": 200,
+    "sell_order_usdt": 100,
     "max_total_usdt": 1000,
     "leverage": 1,
     "short_stop_pct": 10.0,
-    "surge_chase_usdt": 200
+    "surge_chase_usdt": 100
   }
 }
