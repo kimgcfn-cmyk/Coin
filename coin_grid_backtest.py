@@ -104,6 +104,78 @@ def sim(px, vol, c=CFG, init_usdt=0.0):
         ev["maxexp"] = max(ev["maxexp"], S["qty"] * p); eqs.append(eq); exps.append(S["qty"] * p)
     pend = S["qty"] * px[-1] * (1 - SLIP) * (1 - FEE) - S["qty"] * S["avg"]
     return dict(eqs=eqs, exps=exps, total=cash + S["qty"] * px[-1] * (1 - SLIP) * (1 - FEE), realized=realized, unreal=pend, fees=fees, mdd=mdd, end_qty=S["qty"], **ev)
+
+# ───────────────────────── 숏 전략(coin_grid_short_bot.py) 모의 ─────────────────────────
+SHORT_CFG = dict(step=1.0, cover_step=1.5, open_usdt=20.0, cover_usdt=30.0, cap=200.0, pause_pct=15.0, crash_pct=3.0, win=1, chase=30.0,
+                 ladder=(3.0, 4.5, 6.0), confirm=3, rally_pct=8.0, rally_win=5, rally_rebound=2.0, rally_quiet=30, stop_pct=10.0)
+
+def sim_short(px, vol=None, c=None):
+    """숏 그리드(+step%에 숏 진입, -cover_step%에 환매) + 급락 추격 숏/반등 사다리 환매 + 5분 급등 시 신규 숏 중단 + 저점 +15% 중단 + 평균가 +stop_pct% 강제 손절.
+    1분 종가 기준. 반환: dict(total, realized, unreal, fees, mdd, shorts, covers, sells(=환매 손익 리스트), crashes, stops)"""
+    c = {**SHORT_CFG, **(c or {})}
+    p0 = px[0]; q = 0.0; avg = p0; ref = p0; trough = p0; hold = 0.0; cash = 0.0; fees = 0.0; realized = 0.0
+    crash = False; clow = 0; ck = 0; cn = 0; cbase = 0; paused = False; rally = False; rhigh = 0; rhi_i = 0; halted = False
+    ev = dict(shorts=0, covers=[], crashes=0, stops=0, rally=0); eq_peak = -1e9; mdd = 0.0; eqs = []
+    def sell_short(usdt, p):
+        nonlocal q, avg, cash, fees, hold
+        fp = p * (1 - SLIP); qq = usdt / fp; fee = usdt * FEE
+        avg = (q * avg + qq * fp - fee) / (q + qq) if q + qq > 0 else fp
+        q += qq; cash += qq * fp - fee; fees += fee; hold += usdt; ev["shorts"] += 1
+    def cover(qq, p):
+        nonlocal q, cash, fees, realized, hold
+        qq = min(qq, q); fp = p * (1 + SLIP); cost = qq * fp; fee = cost * FEE; pnl = qq * (avg - fp) - fee
+        realized += pnl; cash -= cost + fee; fees += fee; q -= qq; ev["covers"].append(pnl)
+        if q <= 1e-12: q = 0.0; hold = 0.0
+    for i in range(1, len(px)):
+        p = px[i]
+        if halted:
+            eqs.append(cash - q * p); continue
+        if q > 0 and c["stop_pct"] and p >= avg * (1 + c["stop_pct"] / 100):
+            cover(q, p); halted = True; ev["stops"] += 1; eqs.append(cash - q * p); continue
+        if not crash:
+            hi = max(px[max(0, i - c["win"]):i + 1])
+            if p <= hi * (1 - c["crash_pct"] / 100):
+                crash = True; clow = p; ck = 0; cn = 0; ev["crashes"] += 1
+                if c["chase"] > 0 and hold + c["chase"] <= c["cap"]: sell_short(c["chase"], p)
+                cbase = q
+                eqs.append(cash - q * p); continue
+        else:
+            clow = min(clow, p); lad = c["ladder"]
+            if q <= 0:
+                if p >= clow * (1 + lad[0] / 100): crash = False; ref = p; trough = p
+            else:
+                cn = cn + 1 if (ck < len(lad) and p >= clow * (1 + lad[ck] / 100)) else 0; done = False
+                if ck < len(lad) and p >= clow * (1 + lad[ck] / 100) and cn >= c["confirm"]:
+                    qq = q if ck == len(lad) - 1 else min(cbase / len(lad), q)
+                    if qq * p < 6 or q - qq < 6 / p: qq = q
+                    cover(qq, p); ck += 1
+                if ck >= len(lad) or q <= 0: crash = False; ref = p; trough = p
+            eqs.append(cash - q * p); continue
+        lo5 = min(px[max(0, i - c["rally_win"]):i + 1])
+        if not rally:
+            if p >= lo5 * (1 + c["rally_pct"] / 100): rally = True; rhigh = p; rhi_i = i; ev["rally"] += 1
+        else:
+            if p > rhigh: rhigh = p; rhi_i = i
+            if p <= rhigh * (1 - c["rally_rebound"] / 100) or i - rhi_i >= c["rally_quiet"]: rally = False; ref = p
+            elif p >= ref * (1 + c["step"] / 100): ref = p
+        trough = p if (q <= 0 and not paused) else min(trough, p)
+        if paused:
+            if p > ref: ref = p
+            if q <= 0: paused = False; trough = ref = p
+        elif c["pause_pct"] and q > 0 and p >= trough * (1 + c["pause_pct"] / 100): paused = True
+        if q <= 0 and p < ref and not paused: ref = p
+        blocked = paused or rally
+        if p >= ref * (1 + c["step"] / 100):
+            if not blocked and hold < c["cap"]: sell_short(c["open_usdt"], p); ref = p
+        elif p <= ref * (1 - c["cover_step"] / 100) and q > 0:
+            qq = c["cover_usdt"] / p
+            if q - qq < qq * 0.5: qq = q
+            cover(qq, p); hold = 0.0 if q <= 0 else max(0.0, hold - c["cover_usdt"]); ref = p
+        eqs.append(cash - q * p)
+    last = px[-1]; unreal = q * (avg - last * (1 + SLIP) * (1 + FEE)) if q > 0 else 0.0
+    for e in eqs: eq_peak = max(eq_peak, e); mdd = min(mdd, e - eq_peak)
+    return dict(total=realized + unreal, realized=realized, unreal=unreal, fees=fees, mdd=mdd, sells=ev["covers"], shorts=ev["shorts"], crashes=ev["crashes"], stops=ev["stops"], rally=ev["rally"], end_q=q, eqs=eqs)
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("사용: python coin_grid_backtest.py ABC [시간=20]"); sys.exit(1)
@@ -119,6 +191,13 @@ if __name__ == "__main__":
     ts, px, vol = candles(base + "USDT", hours)
     if not px:
         print("시세를 가져오지 못했습니다 — 심볼을 확인하세요"); sys.exit(1)
+    if "--side" in sys.argv and sys.argv[sys.argv.index("--side") + 1] == "short":
+        print(f"===== [숏 전략] {base}USDT 최근 {hours:g}시간 1분봉 {len(px)}개: {px[0]:.6g} → {px[-1]:.6g} ({(px[-1]/px[0]-1)*100:+.1f}%), 고 {max(px):.6g} 저 {min(px):.6g}")
+        for lab, cc in (("숏 전략 (기본)", {}), ("강제 손절 끔", dict(stop_pct=0)), ("추격 숏 없음", dict(chase=0)), ("손절 5%", dict(stop_pct=5.0))):
+            r = sim_short(px, vol, cc); w = [x for x in r["sells"] if x > 0]
+            print(f"  {lab:<14}| 합계 {r['total']:>+7.2f} (실현 {r['realized']:>+6.2f} 평가 {r['unreal']:>+6.2f}) 수수료 {r['fees']:.2f} | 숏진입 {r['shorts']:>3} 환매 {len(r['sells']):>3} 승률 {len(w)/len(r['sells'])*100 if r['sells'] else 0:>3.0f}% | 급락 {r['crashes']}회 급등대응 {r['rally']}회 손절 {r['stops']}회 | 낙폭 {r['mdd']:>7.2f}")
+        print(f"  (참고) 30 USDT 숏을 그냥 들고 있으면 {-30*(px[-1]/px[0]-1):+.2f}")
+        sys.exit(0)
     print(f"===== {base}USDT 최근 {hours:g}시간 1분봉 {len(px)}개: {px[0]:.6g} → {px[-1]:.6g} ({(px[-1]/px[0]-1)*100:+.1f}%), 고 {max(px):.6g} 저 {min(px):.6g}")
     for lab, c in (("현재 전략", cur), ("급등 모드 끔", {**cur, "surge": False}), ("급락 대응 없음", {**cur, "crash": None}), ("추격 매수 없음", {**cur, "chase": 0.0})):
         r = sim(px, vol, {**CFG, **c}, 0.0); s = r["sells"]; w = [x for x in s if x > 0]
