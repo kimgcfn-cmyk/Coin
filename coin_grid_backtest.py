@@ -167,7 +167,7 @@ def sim_short(px, vol=None, c=None):
         blocked = paused or rally
         if p >= ref * (1 + c["step"] / 100):
             if not blocked and hold < c["cap"]: sell_short(c["open_usdt"], p); ref = p
-        elif p <= ref * (1 - c["cover_step"] / 100) and q > 0:
+        elif p <= ref * (1 - c["cover_step"] / 100) and q > 0 and (c.get("min_profit") is None or p <= avg * (1 - c["min_profit"] / 100)):
             qq = c["cover_usdt"] / p
             if q - qq < qq * 0.5: qq = q
             cover(qq, p); hold = 0.0 if q <= 0 else max(0.0, hold - c["cover_usdt"]); ref = p

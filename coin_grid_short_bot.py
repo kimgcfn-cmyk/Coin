@@ -33,6 +33,7 @@ CFG = g.CFG
 CFG.setdefault("short_stop_pct", 10.0)
 CFG.setdefault("rally_fast_pct", 3.0)        # 급등 보호(빠른 쪽): rally_fast_win_min분 안에 이 %만큼 오르면 신규 숏 중단 (0=끔)
 CFG.setdefault("rally_fast_win_min", 1)
+CFG.setdefault("cover_min_profit_pct", 0.2)  # 그리드 환매는 현재가가 평균 진입가보다 이 %만큼 낮을 때만 (0/None=끔). 급락 모드 단계 환매·강제 손절에는 적용 안 함
 FEE_FB = 0.0006
 
 # ── 숏 장부 (평균 진입가 방식, 수수료 반영) ────────────────────────────
@@ -241,6 +242,9 @@ def run_check(send=True):
             else:
                 print(f"  ❌ 숏 진입 실패: {detail}")
                 if not ("40762" in detail or "exceeds the balance" in detail): msg = f"❌ <b>{CFG['symbol']} 숏 진입 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
+    elif price <= down and qty > 0 and CFG.get("cover_min_profit_pct") and state.get("avg_cost") and price > state["avg_cost"] * (1 - CFG["cover_min_profit_pct"] / 100):
+        need = state["avg_cost"] * (1 - CFG["cover_min_profit_pct"] / 100)
+        print(f"  환매선 {down:,.6g} 도달했지만 평균 진입가 {state['avg_cost']:,.6g} 대비 이익 {CFG['cover_min_profit_pct']:g}% 미달 — 환매 보류 (≤ {need:,.6g} 필요)" + (" [신규 숏 중단 중]" if paused else ""))
     elif price <= down and qty > 0:
         q = CFG.get("sell_order_usdt", CFG["order_usdt"]) * CFG["leverage"] / price
         allq = state["qty"] - q < q * 0.5
