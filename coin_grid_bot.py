@@ -97,6 +97,7 @@ CFG = {
     "trail_exit_pct"  : 15.0,              # 고점 대비 -15% 하락 시 봇 물량 전량 청산 후 정지 (BIRB는 2026-10-24 -12%→-15%로 넓힘; 급등 이벤트 모의에서 -15%가 평균 최고)
     "paper"           : False,             # True면 거래소 주문 없이 모의 체결만(상태·로그는 실거래 봇과 동일하게 쌓임). 디스코드·원장 기록도 생략 (2026-10-26 IRYS 그림자용)
     "paper_slip"      : 0.0028,            # 모의 체결 슬리피지(편도)
+    "sell_min_profit_pct": None,           # 숫자(예: 0)면 그리드 매도는 현재가가 봇 평균 매수가보다 이 %만큼 높을 때만 (손실 구간 자동 매도 방지). None=끔. CAP는 2026-10-26부터 0 (본전 이상에서만 매도)
     "entry_spacing"   : False,             # True면 추가 매수는 직전 매수가에서 step_pct% 더 내려왔을 때만 (평균가 기준에서 매분 연속 매수되는 것 방지, 2026-10-26)
     "ref_mode"        : "last",            # 기준가 방식: "last"=마지막 체결가(기본, 래칫), "sma"=직전 ref_sma_min분 평균가(매분 갱신). CAP는 2026-10-26부터 sma 5분
     "ref_sma_min"     : 5,                 # sma 모드의 평균 구간(분, 최대 14 — 시세 기록이 15분만 남음)
@@ -446,6 +447,9 @@ def check_grid(state: dict, price: float) -> dict:
         qty_needed = (CFG["order_usdt"] * CFG["leverage"]) / price
         if state.get("qty", 0.0) <= 0:
             return {"action": "sell_blocked", "reason": "보유 수량 부족 — 매도할 물량 없음"}
+        smp = CFG.get("sell_min_profit_pct")
+        if smp is not None and state.get("avg_cost") and price < state["avg_cost"] * (1 + smp / 100):
+            return {"action": None, "reason": f"매도 보류 — 평균 매수가 {state['avg_cost']:,.4f} 대비 +{smp:g}% 미만이라 손실 구간 매도 안 함 (기준가 {ref:,.4f}, 필요 {state['avg_cost'] * (1 + smp / 100):,.4f} 이상)"}
         return {"action": "sell", "reason": f"기준가 {ref:,.4f} 대비 +{CFG.get('sell_step_pct', CFG['step_pct']):g}% 도달"}
 
     return {"action": None, "reason": f"대기 (기준가 {ref:,.4f}, "
