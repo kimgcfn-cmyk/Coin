@@ -1,17 +1,22 @@
 {
   "name": "cap_long",
   "symbol": "CAP/USDT:USDT",
-  "설명": "CAP 롱 그리드(coin_grid_bot.py) 설정 (2026-10-26). 기준가 -1%에 매수 50USDT, +1.5%에 매도 75USDT, 한도 500USDT(명목), 1분 +3% 급등 추격 매수 75USDT + 3분 확인 사다리(-3/-4.5/-6%), 5분 -8% 급락 시 신규 매수 중단. 안전장치: 보유 후 고점 대비 -10%에서 봇 물량 전량 청산하고 4시간(240분) 쉰 뒤 기준가·고점을 현재가로 잡고 자동 재개. 봇은 명목 기준 주문(leverage=1), 계정 레버리지 5배(교차).",
+  "설명": "CAP 롱 그리드(coin_grid_bot.py) 설정 (2026-10-26 수정). 기준가(마지막 체결가) -0.5%에 매수 50USDT, +1%에 매도 100USDT, 한도 1000USDT(명목), 1분 +3% 급등 추격 매수 100USDT + 3분 확인 사다리(-3/-4.5/-6%), 5분 -8% 급락 시 신규 매수 중단, 보유 후 고점 -10%에서 봇 물량 전량 청산하고 4시간 쉰 뒤 자동 재개. 그림자 모드: 실거래 없이 '직전 5분·10분 평균가를 기준가로 쓰는' 가상 거래를 병렬 기록(shadow_modes [5,10]). 계정 레버리지 5배(교차), 봇은 명목 기준 주문(leverage=1).",
   "cfg": {
-    "step_pct": 1.0,
-    "sell_step_pct": 1.5,
+    "step_pct": 0.5,
+    "sell_step_pct": 1.0,
     "order_usdt": 50,
-    "sell_order_usdt": 75,
-    "max_total_usdt": 500,
+    "sell_order_usdt": 100,
+    "max_total_usdt": 1000,
     "leverage": 1,
-    "surge_chase_usdt": 75,
+    "surge_chase_usdt": 100,
     "trail_exit_pct": 10.0,
     "trail_action": "liquidate",
-    "trail_rest_min": 240
+    "trail_rest_min": 240,
+    "shadow_modes": [
+      5,
+      10
+    ],
+    "shadow_slip": 0.0028
   }
 }

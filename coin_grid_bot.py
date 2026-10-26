@@ -95,6 +95,8 @@ CFG = {
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
     "guard_leverage"  : False,             # 계정 레버리지가 달라도 주문 보류하지 않음
     "trail_exit_pct"  : 15.0,              # 고점 대비 -15% 하락 시 봇 물량 전량 청산 후 정지 (BIRB는 2026-10-24 -12%→-15%로 넓힘; 급등 이벤트 모의에서 -15%가 평균 최고)
+    "shadow_modes"    : [],                # 그림자 모드: 실거래 없이 "직전 N분 평균가를 기준가로 쓰는" 가상 거래를 병렬로 기록. 예: [5, 10] (2026-10-26 CAP용)
+    "shadow_slip"     : 0.0028,            # 가상 거래의 편도 슬리피지(백테스트와 같은 값)
     "trail_rest_min"  : 0,                 # (trail_action="liquidate"일 때) 고점 청산 후 이 분만큼 쉬고 자동 재개. 0이면 청산 후 정지(--resume 필요). 2026-10-26 CAP용 추가
     "trail_action"    : "pause_buy",       # 고점 하락 시 동작: "pause_buy"=신규 매수 중단+보유분만 매도(물량 0이면 자동 재개), "liquidate"=전량 청산 후 정지 (2026-10-24 pause_buy로 변경)
     "surge_mode"      : True,              # 급등 모드 (2026-10-24): 급등하면 그리드 매도·신규 매수를 멈추고 트레일링으로 판다
@@ -608,6 +610,93 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
 # ══════════════════════════════════════════════════════
 #  메인 점검
 # ══════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════
+#  그림자 모드 — 실거래와 별개로 '평균가 기준' 전략을 가상으로 돌려 비교용 기록만 남긴다 (주문 없음)
+# ══════════════════════════════════════════════════════
+SHADOW_FEE = 0.0004
+
+def _shadow_path() -> str:
+    sf = CFG.get("state_file", "coin_grid_state.json")
+    return sf.replace("_state.json", "_shadow.json")
+
+def _shadow_new_mode() -> dict:
+    return {"qty": 0.0, "cash": 0.0, "hold": 0.0, "avg": 0.0, "peak": 0.0, "crash": False, "low": 0.0, "low_t": 0.0, "rest_until": 0.0,
+            "fees": 0.0, "buys": 0, "sells": 0, "wins": 0, "trails": 0, "crashes": 0, "realized": 0.0, "eq_peak": 0.0, "mdd": 0.0}
+
+def shadow_step(state: dict, price: float, now_ts: float, now_str: str) -> None:
+    """매 점검(약 1분)마다 호출. 모드별(N분 평균가)로 가상 매수·매도·트레일 청산·급락 대응을 모의하고 파일에 저장한다.
+    규칙은 백테스트(sma_eval)와 같다: 기준가=직전 N분 평균, 매수=기준가-step_pct%, 매도=기준가+sell_step_pct%, 트레일 청산 후 휴식, 5분 -8% 급락 시 매수 중단."""
+    modes = CFG.get("shadow_modes") or []
+    if not modes:
+        return
+    path = _shadow_path()
+    try:
+        sh = json.load(open(path, encoding="utf-8"))
+    except Exception:
+        sh = {}
+    if not sh:
+        sh = {"start": now_ts, "start_str": now_str, "start_price": price, "hist": [], "modes": {}, "events": [],
+              "live0": {"cum_pnl": state.get("cum_pnl") or 0.0, "qty": state.get("qty", 0.0), "avg_cost": state.get("avg_cost") or 0.0, "price": price}}
+    hist = [h for h in sh.get("hist", []) if now_ts - h[0] <= 15 * 60]
+    prev = list(hist); hist.append([now_ts, price]); sh["hist"] = hist
+    slip = CFG.get("shadow_slip", 0.0028)
+    bs, ss = CFG["step_pct"], CFG.get("sell_step_pct", CFG["step_pct"])
+    bu, su, cap = CFG["order_usdt"], CFG.get("sell_order_usdt", CFG["order_usdt"]), CFG["max_total_usdt"]
+    trail = CFG.get("trail_exit_pct") if CFG.get("trail_action") == "liquidate" else None
+    rest = CFG.get("trail_rest_min") or 240
+    lines = []
+    for n in modes:
+        key = str(n)
+        m = sh["modes"].setdefault(key, _shadow_new_mode())
+        def buy(usdt):
+            fp = price * (1 + slip); q = usdt / fp; fee = usdt * SHADOW_FEE
+            m["avg"] = (m["qty"] * m["avg"] + usdt + fee) / (m["qty"] + q) if m["qty"] + q > 0 else fp
+            m["qty"] += q; m["cash"] -= usdt + fee; m["hold"] += usdt; m["fees"] += fee; m["buys"] += 1
+            sh["events"].append([now_str, key, "매수", round(price, 8), round(usdt, 2), round(q, 6), 0.0])
+        def sell(q, why="매도"):
+            q = min(q, m["qty"]); fp = price * (1 - slip); pr = q * fp; fee = pr * SHADOW_FEE
+            pnl = q * (fp - m["avg"]) - fee
+            m["cash"] += pr - fee; m["fees"] += fee; m["qty"] -= q; m["realized"] += pnl; m["sells"] += 1; m["wins"] += 1 if pnl > 0 else 0
+            if m["qty"] <= 1e-12: m["qty"] = 0.0; m["hold"] = 0.0
+            sh["events"].append([now_str, key, why, round(price, 8), round(pr, 2), round(q, 6), round(pnl, 4)])
+        def eq(): return m["cash"] + m["qty"] * price * (1 - slip) * (1 - SHADOW_FEE)
+        def track():
+            e = eq(); m["eq_peak"] = max(m["eq_peak"], e); m["mdd"] = min(m["mdd"], e - m["eq_peak"])
+        if now_ts < m["rest_until"]:
+            track(); lines.append(f"B{n} 휴식중 {eq():+.2f}"); continue
+        if m["rest_until"] and now_ts >= m["rest_until"]:
+            m["rest_until"] = 0.0; m["peak"] = 0.0
+        if m["qty"] > 0: m["peak"] = max(m["peak"], price)
+        else: m["peak"] = 0.0
+        if trail and m["qty"] > 0 and price <= m["peak"] * (1 - trail / 100):
+            sell(m["qty"], "트레일청산"); m["trails"] += 1; m["rest_until"] = now_ts + rest * 60; m["peak"] = 0.0; m["crash"] = False
+            track(); lines.append(f"B{n} 트레일청산 {eq():+.2f}"); continue
+        hi5 = max([p for t_, p in hist if now_ts - t_ <= CFG["crash_window_min"] * 60 + 30] or [price])
+        if not m["crash"]:
+            if CFG.get("crash_mode") and price <= hi5 * (1 - CFG["crash_pct"] / 100):
+                m["crash"] = True; m["crashes"] += 1; m["low"] = price; m["low_t"] = now_ts
+        else:
+            if price < m["low"]: m["low"] = price; m["low_t"] = now_ts
+            if price >= m["low"] * (1 + CFG["crash_rebound_pct"] / 100) or now_ts - m["low_t"] >= CFG["crash_quiet_min"] * 60:
+                m["crash"] = False
+        pm = [p for t_, p in prev if now_ts - t_ <= n * 60 + 30]
+        if len(pm) < max(2, n - 1):
+            track(); lines.append(f"B{n} 평균 준비중({len(pm)}/{n})"); continue
+        r = sum(pm) / len(pm)
+        if price <= r * (1 - bs / 100):
+            if not m["crash"] and m["hold"] < cap: buy(bu)
+        elif m["qty"] > 0 and price >= r * (1 + ss / 100):
+            q = su / price
+            if m["qty"] - q < q * 0.5: q = m["qty"]
+            m["hold"] = max(0.0, m["hold"] - su); sell(q)
+        track(); lines.append(f"B{n} {eq():+.2f}(보유 {m['qty'] * price:.0f}USDT, 매수{m['buys']}/매도{m['sells']})")
+    sh["events"] = sh["events"][-400:]
+    sh["updated"] = now_ts
+    tmp = path + ".tmp"
+    json.dump(sh, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
+    os.replace(tmp, path)
+    print("  👻 그림자(가상) 손익: " + " | ".join(lines))
+
 def run_check(send: bool = True):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"\n{'='*56}")
@@ -624,6 +713,12 @@ def run_check(send: bool = True):
         print(f"  ❌ {CFG['symbol']} 시세 조회 실패 — --find-symbol 로 정확한 심볼 확인 필요")
         return
     print(f"  현재가: {price:,.4f} USDT")
+
+    if send and CFG.get("shadow_modes"):
+        try:
+            shadow_step(state, price, time.time(), now)
+        except Exception as e:                       # 그림자 모드 오류가 실거래에 영향을 주지 않게 한다
+            print(f"  (그림자 모드 오류 무시: {type(e).__name__}: {e})")
 
     if state.get("halted"):
         print(f"  ⏸️ 봇 정지 상태 ({state.get('halted_reason', '')}) — 재개하려면 --resume")

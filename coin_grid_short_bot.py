@@ -33,6 +33,8 @@ CFG = g.CFG
 CFG.setdefault("short_stop_pct", 10.0)
 CFG.setdefault("rally_fast_pct", 3.0)        # 급등 보호(빠른 쪽): rally_fast_win_min분 안에 이 %만큼 오르면 신규 숏 중단 (0=끔)
 CFG.setdefault("rally_fast_win_min", 1)
+CFG.setdefault("ref_mode", "last")          # 기준가 방식: "last"=마지막 체결가(기본), "sma"=직전 ref_sma_min분 평균가(매분 갱신). 2026-10-26 ORDER용 추가
+CFG.setdefault("ref_sma_min", 5)             # sma 모드의 평균 구간(분, 최대 14 — 시세 기록이 15분만 남음)
 CFG.setdefault("cover_min_profit_pct", 0.0)  # 그리드 환매는 현재가가 평균 진입가보다 이 %만큼 낮을 때만 (0/None=끔, 기본 끔). 급락 모드 단계 환매·강제 손절에는 적용 안 함
 FEE_FB = 0.0006
 
@@ -221,7 +223,15 @@ def run_check(send=True):
 
     # ⑤ 숏 그리드
     ref = state["reference_price"]; qty = state.get("qty", 0.0)
-    if qty <= 0 and price < ref and not state.get("buy_paused"):
+    if CFG.get("ref_mode") == "sma":
+        n_ = min(int(CFG.get("ref_sma_min", 5)), 14)
+        prev_ = [p_ for ts_, p_ in hist[:-1] if t - ts_ <= n_ * 60 + 30]       # 현재가를 뺀 직전 n분 시세 기록(1분 간격)
+        if len(prev_) < max(2, n_ - 1):
+            print(f"  😴 {n_}분 평균가 준비 중 ({len(prev_)}/{n_}개 기록) — 이번 점검은 거래 보류")
+            if send: g.save_state(state)
+            return
+        state["reference_price"] = ref = sum(prev_) / len(prev_)
+    elif qty <= 0 and price < ref and not state.get("buy_paused"):
         state["reference_price"] = ref = price
     up = ref * (1 + CFG["step_pct"] / 100); down = ref * (1 - CFG.get("sell_step_pct", CFG["step_pct"]) / 100)
     paused = state.get("buy_paused") or state.get("rally_on")
@@ -260,7 +270,7 @@ def run_check(send=True):
             print(f"  ❌ 환매 실패: {detail}")
             msg = g.zero_book(state, "환매 주문이 거절됨(25227).") if g.no_position_error(detail) else f"❌ <b>{CFG['symbol']} 환매 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
     else:
-        print(f"  대기 (기준가 {ref:,.6g}, 숏진입 {up:,.6g} / 환매 {down:,.6g})" + (" [신규 숏 중단 중]" if paused else ""))
+        print(f"  대기 (기준가 {ref:,.6g}{' [' + str(CFG.get('ref_sma_min', 5)) + '분 평균]' if CFG.get('ref_mode') == 'sma' else ''}, 숏진입 {up:,.6g} / 환매 {down:,.6g})" + (" [신규 숏 중단 중]" if paused else ""))
     if send: g.save_state(state)
     _send(msg, send)
     if not msg: print("\n  액션 없음 (대기)")
