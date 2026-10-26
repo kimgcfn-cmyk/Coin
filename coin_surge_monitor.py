@@ -1,5 +1,5 @@
 """
-급등 코인 탐지 모니터 (알림 전용 — 실제 주문 없음)
+급등 코인 탐지 모니터 — "펌프 후 되돌림 관찰" 알림 (알림 전용 — 실제 주문 없음)
 ============================================================
 Bitget USDT-M 선물 전 종목을 주기적으로 훑어서, 단기간에 가격이 급등하면서
 거래량까지 터지는 코인을 찾아 디스코드로 알린다. 매수/매도 주문은 내지 않는다.
@@ -29,6 +29,13 @@ Bitget USDT-M 선물 전 종목을 주기적으로 훑어서, 단기간에 가�
   단, 직전 알림가보다 rearm_pct(4%) 이상 더 오르면 다시 알린다.
   한 번 실행에 보내는 알림은 max_alerts(5건)까지 (점수 높은 순).
 
+[2026-10-26 개선 — 그리드 봇 전략과 맞추기]
+  - 알림 대상: 24시간 거래대금 5M 이상(기존 1M) + 봇 운용 종목(own_symbols: ORDER·CAP·T)은 거래대금과 상관없이 항상 감시, 알림에 ⭐ 표시
+  - 알림에 10시간 등락·고점 대비·호가 깊이·스프레드·유동성 판정(봇이 거래할 만한 수준인지)을 함께 표시
+  - 사후 추적: 알림 1시간·4시간 뒤 가격 변화와 그 사이 최고·최저를 coin_surge_outcomes.json 에 자동 기록 → --outcomes 로 확인,
+    12시간 생존 알림에 평균 결과를 같이 보냄, 맥의 coin_excel_export.py 가 엑셀(급등알림_사후추적.xlsx)로 만든다
+  - 알림 문구는 "추격 매수 신호 아님 / 펌프 후 되돌림 관찰"로 바꿈 (최근 알림 9건 중 7건이 이후 하락했으나 표본이 적어 보장 아님)
+
 [주의]
   - 최초 실행 후 history가 쌓여야 감지가 시작된다 (약 5분 뒤부터).
     cron 1분 주기를 전제로 한다.
@@ -42,6 +49,7 @@ Bitget USDT-M 선물 전 종목을 주기적으로 훑어서, 단기간에 가�
   python coin_surge_monitor.py --check   # 발송/저장 없이 결과만 출력
   python coin_surge_monitor.py --top     # 지금 24시간 상승률 상위 종목 확인 (진단용)
   python coin_surge_monitor.py --status  # history 축적 현황 / 최근 알림
+  python coin_surge_monitor.py --outcomes # 알림 1시간·4시간 뒤 결과 표
   python coin_surge_monitor.py --reset   # 상태 초기화
 
 cron 등록 (1분마다):
@@ -67,7 +75,13 @@ except ImportError:
 # ══════════════════════════════════════════════════════
 CFG = {
     "product_type"     : "USDT-FUTURES",
-    "min_vol_usdt"     : 1_000_000,                   # 24시간 거래대금 하한 (너무 얇은 종목 제외, 약 140종목)
+    "min_vol_usdt"     : 5_000_000,                   # 24시간 거래대금 하한 (2026-10-26 1M→5M: 봇이 거래할 만한 유동성만)
+    "own_symbols"      : ["ORDERUSDT", "CAPUSDT", "TUSDT"],   # 봇 운용 종목 — 거래대금 하한과 무관하게 감시, 알림에 ⭐ 표시
+    "min_depth_usdt"   : 1000,                        # 유동성 판정: 호가 상위 5개(매수·매도 중 작은 쪽) 합계
+    "max_spread_pct"   : 0.2,                         # 유동성 판정: 스프레드 상한
+    "outcome_file"     : "coin_surge_outcomes.json",  # 알림 사후 추적 기록
+    "outcome_minutes"  : [60, 240],                   # 알림 후 이 시간(분)이 지난 첫 점검에서 가격 변화를 기록
+    "outcome_keep_days": 14,
     "exclude"          : ["TQQQUSDT", "PLTRUSDT"],    # 그리드 봇이 따로 운용 중인 종목
     "windows"          : [(5, 5.0)],                          # (분, 상승률% 기준) — 5분 +5% 이상
     "history_keep_min" : 15,                          # 가격 샘플 보관 시간 (구간 5분 + 여유)
@@ -157,10 +171,11 @@ def fetch_tickers() -> dict:
             vol = float(x.get("usdtVolume") or x.get("quoteVolume") or 0)
             chg24 = float(x.get("change24h") or 0) * 100
             funding = float(x.get("fundingRate") or 0) * 100
+            bid = float(x.get("bidPr") or 0); ask = float(x.get("askPr") or 0)
         except (KeyError, TypeError, ValueError):
             continue
         if price > 0:
-            out[sym] = {"price": price, "vol": vol, "chg24": chg24, "funding": funding}
+            out[sym] = {"price": price, "vol": vol, "chg24": chg24, "funding": funding, "bid": bid, "ask": ask}
     return out
 
 def fetch_candles(symbol: str, limit: int = 40) -> list:
@@ -183,7 +198,7 @@ def fetch_candles(symbol: str, limit: int = 40) -> list:
 # ══════════════════════════════════════════════════════
 def eligible(sym: str, t: dict) -> bool:
     return (sym.endswith("USDT") and sym not in CFG["exclude"]
-            and t["vol"] >= CFG["min_vol_usdt"])
+            and (t["vol"] >= CFG["min_vol_usdt"] or sym in CFG["own_symbols"]))
 
 def update_history(state: dict, tickers: dict, now: int):
     """eligible 종목의 현재가 샘플을 쌓고 오래된 샘플/사라진 종목을 정리."""
@@ -282,26 +297,111 @@ def fmt_window(m: int) -> str:
 def kst_now() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M:%S KST")
 
-def build_message(c: dict, ratio: float, ratio24: float) -> str:
+def book_depth(sym: str):
+    """호가 상위 5개 합계(USDT): 매수·매도 중 작은 쪽. 조회 실패 시 None."""
+    d = _api_get("/api/v2/mix/market/merge-depth", {"symbol": sym, "productType": CFG["product_type"], "limit": "15"})
+    try:
+        b = sum(float(x[0]) * float(x[1]) for x in d.get("bids", [])[:5]); a = sum(float(x[0]) * float(x[1]) for x in d.get("asks", [])[:5])
+        return min(a, b)
+    except Exception:
+        return None
+
+def enrich(c: dict, rows: list) -> dict:
+    """알림용 추가 지표: 10시간 등락, 고점 대비, 호가 깊이, 스프레드, 유동성 판정."""
+    ex = {"net10h": None, "from_high": None, "depth": None, "spread": None, "liquid": False, "own": c["symbol"] in CFG["own_symbols"]}
+    if len(rows) >= 121:
+        ex["net10h"] = (c["price"] / rows[-121][4] - 1) * 100
+        hi = max(r[2] for r in rows[-120:])
+        ex["from_high"] = (c["price"] / hi - 1) * 100 if hi > 0 else None
+    if c.get("bid", 0) > 0 and c.get("ask", 0) > 0:
+        ex["spread"] = (c["ask"] / c["bid"] - 1) * 100
+    ex["depth"] = book_depth(c["symbol"])
+    ex["liquid"] = bool(c["vol"] >= CFG["min_vol_usdt"] and ex["spread"] is not None and ex["spread"] <= CFG["max_spread_pct"]
+                        and ex["depth"] is not None and ex["depth"] >= CFG["min_depth_usdt"])
+    return ex
+
+# ── 알림 사후 추적 ──
+def load_outcomes() -> dict:
+    p = CFG["outcome_file"]
+    if os.path.exists(p):
+        try:
+            return json.load(open(p, encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def save_outcomes(o: dict):
+    tmp = CFG["outcome_file"] + ".tmp"
+    json.dump(o, open(tmp, "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
+    os.replace(tmp, CFG["outcome_file"])
+
+def record_alert(o: dict, c: dict, ratio: float, ratio24: float, ex: dict, now: int):
+    o.setdefault("alerts", []).append({"sym": c["symbol"], "ts": now, "price": c["price"], "chg24": round(c["chg24"], 2), "vol": round(c["vol"]),
+        "ratio": round(ratio, 1), "ratio24": round(ratio24, 1), "net10h": None if ex["net10h"] is None else round(ex["net10h"], 1),
+        "from_high": None if ex["from_high"] is None else round(ex["from_high"], 1), "depth": None if ex["depth"] is None else round(ex["depth"]),
+        "spread": None if ex["spread"] is None else round(ex["spread"], 3), "liquid": ex["liquid"], "own": ex["own"], "hi": c["price"], "lo": c["price"]})
+
+def update_outcomes(o: dict, tickers: dict, now: int):
+    """열려 있는 알림마다: 최고·최저가 갱신, 60분/240분이 지난 첫 점검에서 가격을 기록."""
+    keep = now - CFG["outcome_keep_days"] * 86400
+    o["alerts"] = [a for a in o.get("alerts", []) if a["ts"] >= keep]
+    for a in o["alerts"]:
+        t = tickers.get(a["sym"])
+        if not t: continue
+        age = now - a["ts"]
+        if age <= max(CFG["outcome_minutes"]) * 60 + 120:
+            a["hi"] = max(a.get("hi", a["price"]), t["price"]); a["lo"] = min(a.get("lo", a["price"]), t["price"])
+        for m in CFG["outcome_minutes"]:
+            k = f"p{m}"
+            if k not in a and age >= m * 60:
+                a[k] = t["price"]; a[f"hi{m}"] = a["hi"]; a[f"lo{m}"] = a["lo"]
+
+def outcome_summary(o: dict) -> str:
+    """알림 결과 요약(문자열). 완료된 건만 집계."""
+    out = []
+    for m in CFG["outcome_minutes"]:
+        vals = [(a[f"p{m}"] / a["price"] - 1) * 100 for a in o.get("alerts", []) if f"p{m}" in a]
+        if vals:
+            down = sum(1 for v in vals if v < 0)
+            out.append(f"{fmt_window(m)} 후 평균 {sum(vals)/len(vals):+.1f}% (하락 {down}/{len(vals)}건)")
+    return " · ".join(out) if out else "아직 결과가 쌓이는 중"
+
+def show_outcomes():
+    o = load_outcomes(); now = int(time.time())
+    al = sorted(o.get("alerts", []), key=lambda a: -a["ts"])
+    print(f"  기록된 알림 {len(al)}건 — " + outcome_summary(o))
+    for a in al[:30]:
+        kst = (datetime.fromtimestamp(a["ts"], timezone.utc) + timedelta(hours=9)).strftime("%m-%d %H:%M")
+        r = lambda m: f"{(a[f'p{m}']/a['price']-1)*100:+6.1f}%" if f"p{m}" in a else "   대기"
+        print(f"    {kst} {a['sym']:<12} 알림가 {fmt_price(a['price']):>10}  1h {r(60)}  4h {r(240)}  4h내 최고 {((a.get('hi240', a.get('hi', a['price']))/a['price']-1)*100):+5.1f}% 최저 {((a.get('lo240', a.get('lo', a['price']))/a['price']-1)*100):+5.1f}%  "
+              f"{'⭐운용 ' if a.get('own') else ''}{'유동성 OK' if a.get('liquid') else '유동성 얇음'}")
+
+def build_message(c: dict, ratio: float, ratio24: float, ex: dict = None) -> str:
     moves = " / ".join(f"{fmt_window(m)} {v:+.1f}%"
                        for m, v in c["changes"].items() if v is not None)
     sep = "━━━━━━━━━━━━━━━━━━━"
-    return (f"🚨 <b>급등 탐지 — {c['symbol']}</b>\n"
-            f"{kst_now()}\n"
-            f"{sep}\n"
-            f"현재가: {fmt_price(c['price'])}\n"
-            f"상승률: {moves}\n"
-            f"거래량 배수: 직전 100분 대비 {ratio:.1f}x / 24시간 평균 대비 {ratio24:.1f}x\n"
-            f"24시간 {c['chg24']:+.1f}% · 거래대금 {fmt_big(c['vol'])} USDT · 펀딩 {c['funding']:+.4f}%\n"
-            f"{sep}\n"
-            f"⚠️ 알림 전용 — 자동 주문 없음 (이미 오른 뒤 감지된 신호입니다)\n"
-            f"⚠️ 표본 부족 전략, 반드시 소액으로 검증하세요")
+    ex = ex or {}
+    star = "⭐ <b>봇 운용 종목</b> — " if ex.get("own") else ""
+    lines = [f"🚨 <b>급등 탐지(되돌림 관찰) — {c['symbol']}</b>", f"{star}{kst_now()}", sep,
+             f"현재가: {fmt_price(c['price'])}",
+             f"상승률: {moves}",
+             f"거래량 배수: 직전 100분 대비 {ratio:.1f}x / 24시간 평균 대비 {ratio24:.1f}x",
+             f"24시간 {c['chg24']:+.1f}% · 거래대금 {fmt_big(c['vol'])} USDT · 펀딩 {c['funding']:+.4f}%"]
+    if ex.get("net10h") is not None:
+        lines.append(f"10시간 {ex['net10h']:+.1f}% · 10시간 고점 대비 {ex['from_high']:+.1f}%")
+    if ex.get("depth") is not None or ex.get("spread") is not None:
+        dp = "-" if ex.get("depth") is None else f"{ex['depth']:,.0f}"; sp = "-" if ex.get("spread") is None else f"{ex['spread']:.3f}%"
+        lines.append(f"호가 깊이(상위5) {dp} USDT · 스프레드 {sp} → " + ("✅ 봇이 거래할 만한 유동성" if ex.get("liquid") else "⚠️ 유동성 얇음(봇 거래 비권장)"))
+    lines += [sep, "⚠️ 알림 전용 — 자동 주문 없음. 이미 오른 뒤 감지된 신호라 추격 매수 신호가 아니라 '되돌림 관찰'용입니다.",
+              "ℹ️ 알림 1시간·4시간 뒤 결과는 자동 기록됩니다 (최근 표본에서는 오른 뒤 내려간 경우가 많았지만 표본이 적어 보장은 아닙니다)."]
+    return "\n".join(lines)
 
-def build_heartbeat() -> str:
+def build_heartbeat(outcome_text: str = "") -> str:
     conds = " / ".join(f"{fmt_window(m)} {t:.1f}%↑" for m, t in CFG["windows"])
     return (f"🔍 <b>스캔 진행중</b>\n"
             f"{kst_now()}\n"
             f"조건: {conds} & 거래량 {CFG['min_vol_ratio']}x↑(100분 대비) / {CFG['min_vol_ratio_24h']}x↑(24시간 평균 대비)\n"
+            f"{('알림 사후 결과: ' + outcome_text + chr(10)) if outcome_text else ''}"
             f"({CFG['heartbeat_hours']}시간 간격으로 알립니다)")
 
 # ══════════════════════════════════════════════════════
@@ -330,11 +430,14 @@ def run_check(send: bool = True):
     hb_hours = CFG["heartbeat_hours"]
     if hb_hours and now - state.get("last_heartbeat", 0) >= hb_hours * 3600:
         if send:
-            send_discord(build_heartbeat())
+            send_discord(build_heartbeat(outcome_summary(outcomes)))
             state["last_heartbeat"] = now
         else:
             print("  [--check] 생존 알림('스캔 진행중') 발송 시점 — 발송 생략")
 
+    outcomes = load_outcomes()
+    if send:
+        update_outcomes(outcomes, tickers, now)
     cands = find_candidates(state, tickers, now)
     if not cands:
         first = min(m for m, _ in CFG["windows"])
@@ -354,7 +457,7 @@ def run_check(send: bool = True):
             print(f"  ⏸ {sym}: 후보 ({mv}) — 쿨다운 중")
             continue
         checked += 1
-        rows = fetch_candles(sym)
+        rows = fetch_candles(sym, 130)
         ratio = volume_ratio(rows)
         ratio24 = volume_ratio_24h(rows, c["vol"])
         time.sleep(0.15)
@@ -367,23 +470,25 @@ def run_check(send: bool = True):
             print(f"  ⚪ {sym}: 후보 ({mv}) — 100분 대비 ×{ratio:.1f} 통과, 24시간 평균 대비 {r24} < ×{CFG['min_vol_ratio_24h']} (제외)")
         else:
             print(f"  🚀 {sym}: 급등 확정 ({mv}, 거래량 100분 대비 ×{ratio:.1f} / 24시간 평균 대비 ×{ratio24:.1f})")
-            alerts.append((c, ratio, ratio24))
+            ex = enrich(c, rows)
+            alerts.append((c, ratio, ratio24, ex))
             state.setdefault("alerted", {})[sym] = {"ts": now, "price": c["price"]}
+            if send: record_alert(outcomes, c, ratio, ratio24, ex, now)
 
     # 24시간 지난 알림 기록 정리
     state["alerted"] = {s: a for s, a in state.get("alerted", {}).items()
                         if now - a["ts"] < 86400}
 
     if send:
-        save_state(state)
+        save_state(state); save_outcomes(outcomes)
     else:
         print("  (--check 모드: 상태 저장 생략)")
 
     if not alerts:
         print("\n  알림 없음")
         return
-    for c, ratio, ratio24 in alerts:
-        msg = build_message(c, ratio, ratio24)
+    for c, ratio, ratio24, ex in alerts:
+        msg = build_message(c, ratio, ratio24, ex)
         if send:
             send_discord(msg)
             time.sleep(0.5)
@@ -444,6 +549,10 @@ if __name__ == "__main__":
 
     if "--status" in args:
         show_status()
+        sys.exit(0)
+
+    if "--outcomes" in args:
+        show_outcomes()
         sys.exit(0)
 
     if "--top" in args:
