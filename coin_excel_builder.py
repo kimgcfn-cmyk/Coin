@@ -94,11 +94,13 @@ def add_strategy_sheet(wb, name, short, st):
 def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_notes, spare=0, rate=0.0004, strategy=None, extra=None, now_kst=None):
     short = mode == "short"
     ENT, EXT = ("숏 진입", "환매") if short else ("매수", "매도")
-    isE = (lambda lab: ("진입" in lab or "추격" in lab)) if short else (lambda lab: "매수" in lab)
+    isE = (lambda lab: ("진입" in lab or "추격" in lab or "보강" in lab or "편입" in lab)) if short else (lambda lab: "매수" in lab)
     def kind(lab, entry):
         if "추격" in lab: return "급락 추격 숏" if short else "급등 추격 매수"
         if "분할" in lab: return "급락 분할 환매 " + lab.split()[-1] if short else "급등 분할 매도"
         if "편입" in lab: return "수동 숏 편입"
+        if "보강" in lab: return "하락 추세 숏 보강"
+        if "사다리" in lab: return "하락 추세 사다리 환매"
         if "수동" in lab: return "수동 청산(시장가)"
         if "고점" in lab: return "고점 청산"
         return ("그리드 진입" if entry else "그리드 환매") if short else ("그리드 매수" if entry else "그리드 매도")
