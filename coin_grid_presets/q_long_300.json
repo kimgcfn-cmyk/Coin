@@ -1,0 +1,25 @@
+{
+  "name": "q_long_300",
+  "symbol": "Q/USDT:USDT",
+  "설명": "Q 롱 그리드 — 실전 (2026-10-27 사용자 요청으로 모의에서 실전 전환, 직접 산 Q 롱을 봇 장부에 편입). 기준가 = 직전 5분 평균가(ref_mode=sma), 평균보다 −1% 낮으면 매수 50USDT, +2% 높으면 매도 100USDT(평균 매수가 이상에서만), 한도 300USDT, 진입 간격 규칙 없음, 급등 모드(추격 100USDT), 5분 −8% 급락 시 신규 매수 중단, 고점 −15%에서 봇 물량 전량 청산 후 2시간 휴식. 12시간 변화율 필터는 쓰지 않음. ⚠️ Q는 24h +236% 급등 직후, 스프레드 0.28%·호가 얇음. 편입한 수동 롱이 한도 300을 넘으면 신규 매수는 멈추고 매도만 동작. 계정 레버리지는 봇이 바꾸지 않음.",
+  "cfg": {
+    "step_pct": 1.0,
+    "sell_step_pct": 2.0,
+    "order_usdt": 50,
+    "sell_order_usdt": 100,
+    "max_total_usdt": 300,
+    "leverage": 1,
+    "sell_min_profit_pct": 0,
+    "entry_spacing": false,
+    "ref_mode": "sma",
+    "ref_sma_min": 5,
+    "surge_mode": true,
+    "surge_chase_usdt": 100,
+    "trail_exit_pct": 15.0,
+    "trail_action": "liquidate",
+    "trail_rest_min": 120,
+    "trend_filter": false,
+    "trend_up_block": false,
+    "paper": false
+  }
+}
