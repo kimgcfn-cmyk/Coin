@@ -14,7 +14,8 @@ from coin_excel_builder import add_shadow_sheet
 
 OUT = "/Users/Muita/Desktop/Coin/코인봇수익률"
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "trading-ec2"]
-BOTS = {"T": ("coin_grid_short_t", "TUSDT"), "ORDER": ("coin_grid_short_order", "ORDERUSDT"), "CAP": ("coin_grid_cap", "CAPUSDT")}
+BOTS = {"T": ("coin_grid_short_t", "TUSDT"), "ORDER": ("coin_grid_short_order", "ORDERUSDT"), "CAP": ("coin_grid_cap", "CAPUSDT"),
+        "IRYS_L": ("coin_grid_irys", "IRYSUSDT"), "IRYS_S": ("coin_grid_short_irys", "IRYSUSDT")}   # IRYS는 모의(paper) 거래 — 실제 주문 없음
 # 로그에 없는 체결(사용자 지시로 직접 낸 청산 주문). 주문 응답 값이고 시각은 근사다.
 EXTRA = {"T": [dict(t="2026-10-25 22:47", label="수동 청산 환매", id="manual-t-close", amt=251.8573, qty=45160.0)],
          # 사용자가 직접 추가한 ORDER 숏 2,230개를 봇 장부에 편입(평균가 0.042681). 로그에 없는 건이라 직접 입력, 시각은 근사
@@ -221,6 +222,14 @@ def main():
         strategy=dict(subtitle="CAP 가격이 기준가 대비 −0.5% 눌리면 사고 +1% 오르면 파는 롱 그리드 전략에 급등 추격·급락 대응·트레일링 청산(−10%, 2시간 휴식)을 더한 구성입니다. 10/26 11:55부터 기준가를 직전 5분 평균으로 쓰고, B5·B10 그림자 모드는 가상 비교를 계속합니다. 현재 가동 중입니다.",
                       rules=CAP_RULES, params=CAP_PARAMS, history=CAP_HIST, fit=CAP_FIT, backtests=CAP_BT),
         extra=lambda wb: add_shadow_sheet(wb, shadow, state, px)))
+    # ── IRYS 그림자(모의 체결) ──
+    for key, side, title, fname in (("IRYS_L", "long", "IRYS 롱(가상)", "IRYS_롱_가상거래.xlsx"), ("IRYS_S", "short", "IRYS 숏(가상)", "IRYS_숏_가상거래.xlsx")):
+        fl, stt, pxx = res[key]
+        intro = (f"실제 주문 없이 규칙만 가상으로 돌린 모의 거래입니다(슬리피지 0.28%·수수료 0.04% 가정). 모의 체결 {len(fl)}건. 마지막 갱신 {now} KST. IRYS가 이 전략에 맞는지 관찰하는 용도입니다."
+                 if fl else f"실제 주문 없이 규칙만 가상으로 돌리는 모의 거래입니다. 2026-10-26 12:15 KST에 시작했고 아직 체결이 없습니다(평균가 준비·신호 대기). 마지막 갱신 {now} KST.")
+        save_atomic(os.path.join(out, fname), lambda p, fl=fl, pxx=pxx, side=side, title=title, intro=intro: b.build(p, title, side, fl, 1000, 5, pxx or 0.0, "조회 시점 시세 (자동 갱신)", intro,
+            ["· 모의 거래라 실제 손익이 아닙니다. 사이즈는 진입·매수 100 / 환매·매도 200 / 한도 1000, 5분 평균가 기준, " + ("트레일 −10%+2시간 휴식·급등 모드 포함입니다." if side == "long" else "평균가 +10% 손절·급등 보호 포함입니다."), "· 과거 백테스트에서는 IRYS가 펌프·폭락이 커서 롱·숏 모두 구간별 편차가 매우 컸습니다."],
+            spare=0 if fl else 60))
     # ── 급등 알림 사후 추적 ──
     try: surge = json.loads("\n".join(sec.get(("OUTCOME", "surge"), [])) or "{}")
     except Exception: surge = {}
