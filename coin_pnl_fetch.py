@@ -25,7 +25,7 @@ recs=pages("privateUtaGetV3AccountFinancialRecords",{"category":"USDT-FUTURES","
 recs=[x for x in recs if int(x["ts"])>=start-1]
 # 봇 주문 ID (실거래 봇 로그)
 ids=set()
-for name in ("coin_grid_short_order","coin_grid_short_t","coin_grid_cap","coin_grid_short_cap"):
+for name in ("coin_grid_short_order","coin_grid_short_t","coin_grid_cap","coin_grid_short_cap","coin_grid_aria"):
     for p in glob.glob(f"logs/{name}.log*"):
         op=gzip.open if p.endswith(".gz") else open
         try:
@@ -38,7 +38,13 @@ for p in ex.fetch_positions(None,params=g.UTA):
     if float(p["contracts"] or 0)>0:
         pos.append(dict(symbol=p["symbol"].split("/")[0]+"USDT",side=p["side"],qty=float(p["contracts"]),avg=float(p["entryPrice"]),upl=float(p["unrealizedPnl"] or 0),notional=float(p["notional"] or 0),lev=p.get("leverage"),mark=float(p.get("markPrice") or 0)))
 states={}
-for nm,f in (("ORDER","coin_grid_short_order_state.json"),("T","coin_grid_short_t_state.json"),("CAP","coin_grid_cap_state.json")):
+for nm,f in (("ORDER","coin_grid_short_order_state.json"),("T","coin_grid_short_t_state.json"),("CAP","coin_grid_cap_state.json"),("CAP_S","coin_grid_short_cap_state.json"),("ARIA","coin_grid_aria_state.json")):
     try: s=json.load(open(f,encoding="utf-8")); states[nm]={k:s.get(k) for k in ("qty","avg_cost","cum_pnl","cum_fees")}
     except Exception: pass
-print(json.dumps(dict(now=now,start=start,fills=fills,recs=recs,bot_ids=sorted(ids),assets={k:a.get(k) for k in ("accountEquity","usdtEquity","unrealisedPnl","imr","mmr","effEquity")},positions=pos,states=states),ensure_ascii=False))
+import subprocess
+try:
+    cron=[l for l in subprocess.run(["crontab","-l"],capture_output=True,text=True).stdout.splitlines() if l.strip() and not l.strip().startswith("#")]
+except Exception: cron=[]
+mk={"ORDER 숏 봇":"coin_grid_short_order.lock","T 숏 봇":"coin_grid_short_t.lock","CAP 롱 봇":"coin_grid_cap.lock","CAP 숏 봇":"coin_grid_short_cap.lock","ARIA 롱 봇":"coin_grid_aria.lock"}
+active={n:any(m in l for l in cron) for n,m in mk.items()}
+print(json.dumps(dict(now=now,start=start,fills=fills,recs=recs,bot_ids=sorted(ids),active=active,assets={k:a.get(k) for k in ("accountEquity","usdtEquity","unrealisedPnl","imr","mmr","effEquity")},positions=pos,states=states),ensure_ascii=False))
