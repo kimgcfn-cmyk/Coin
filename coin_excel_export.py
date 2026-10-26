@@ -17,7 +17,8 @@ SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "trading-ec2"]
 BOTS = {"T": ("coin_grid_short_t", "TUSDT"), "ORDER": ("coin_grid_short_order", "ORDERUSDT"), "CAP": ("coin_grid_cap", "CAPUSDT"),
         "CAP_S": ("coin_grid_short_cap", "CAPUSDT"), "IRYS_L": ("coin_grid_irys", "IRYSUSDT"), "IRYS_S": ("coin_grid_short_irys", "IRYSUSDT")}   # IRYS는 모의(paper) 거래 — 실제 주문 없음
 # 로그에 없는 체결(사용자 지시로 직접 낸 청산 주문). 주문 응답 값이고 시각은 근사다.
-EXTRA = {"T": [dict(t="2026-10-25 22:47", label="수동 청산 환매", id="manual-t-close", amt=251.8573, qty=45160.0)],
+EXTRA = {"T": [dict(t="2026-10-25 22:47", label="수동 청산 환매", id="manual-t-close", amt=251.8573, qty=45160.0),
+               dict(t="2026-10-26 13:20", label="수동 청산 환매", id="manual-t-close2", amt=347.025, qty=70400.0)],
          # 사용자가 직접 추가한 ORDER 숏 2,230개를 봇 장부에 편입(평균가 0.042681). 로그에 없는 건이라 직접 입력, 시각은 근사
          "ORDER": [dict(t="2026-10-26 10:05", label="수동 숏 편입 진입", id="manual-order-add", amt=95.1786, qty=2230.0)],
          # 사용자가 직접 낸 CAP 롱 청산(8,801개 평균 0.104103, 같은 시각 숏 8,801개 반대 진입은 봇 거래가 아니라 제외) — 거래소 체결 내역 기준, 시각은 12:52 KST
@@ -85,6 +86,8 @@ T_HIST = [
  ("10/26 11:45", "기준가를 직전 5분 평균가(ref_mode=sma)로 변경 — 이제 숏 봇의 기본전략", "ORDER와 동일. 마지막 체결가 방식으로 되돌리려면 ref_mode=last"),
  ("10/26 11:58", "주문 크기 2배: 숏 진입 50→100, 환매 100→200, 급락 추격 100→200 USDT (한도 1000 유지)", "총자산 549 USDT 대비 최대 노출·최악 손실을 그대로 두기 위해 한도는 유지"),
  ("10/26 12:45", "진입 간격 규칙 추가: 추가 숏은 직전 진입가에서 +0.5% 더 올랐을 때만", "5분 평균 기준에서 가격이 한 방향으로 움직일 때 매분 연속 진입되는 것을 막음. 백테스트: 숏 합계 −665→−616, 최악 낙폭 −236→−172"),
+ ("10/26 13:20", "사용자 지시로 T 봇 중지 및 숏 70,400개 시장가 전량 청산", "청산가 약 0.004929, 봇 누적 실현 +9.32 USDT(수수료 반영)"),
+
 ]
 O_HIST = [
  ("10/25 16:46", "ORDER 숏 봇 가동: 진입 +1%에 100 USDT, 환매 −2%에 150 USDT, 한도 1000, 레버리지 5배", "TUSDT 설정을 복사해 시작"),
@@ -216,7 +219,7 @@ def main():
     save_atomic(os.path.join(out, "T봇_숏전략_수익률.xlsx"), lambda p: b.build(p, "T(TUSDT)", "short", fills, 1000, 5, px or 0.0, "조회 시점 시세 (자동 갱신)",
         f"서버 봇 로그의 실제 체결 {len(fills)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST.",
         ["· 마지막 행(10/25 22:47 KST 수동 청산)은 로그에 없는 체결이라 주문 응답 값을 직접 넣었고 시각은 근사입니다.", "· 기간 중 한도 200→1000, 진입 20→100→50 USDT, 레버리지 10→3→5배로 설정이 바뀌었습니다. 기준 자본은 현재 설정(1000÷5) 기준입니다."],
-        strategy=mk_short("T", "프리셋 max_total_usdt 1000 (첫 가동 때는 200)", T_HIST, "TUSDT 가격이 기준가 대비 +0.5% 오를 때 숏을 쌓고 −1% 내리면 회수하는 '반대(숏) 그리드' 전략입니다. 10/26 11:37에 재가동했고 이 파일은 현재 설정을 요약합니다.")))
+        strategy=mk_short("T", "프리셋 max_total_usdt 1000 (첫 가동 때는 200)", T_HIST, "TUSDT 가격이 기준가 대비 +0.5% 오를 때 숏을 쌓고 −1% 내리면 회수하는 '반대(숏) 그리드' 전략입니다. 10/26 11:37에 재가동했다가 13:20에 사용자 지시로 다시 중지·청산했습니다. 이 파일은 마지막 설정을 요약합니다.")))
     # ── ORDER ──
     fills, state, px = res["ORDER"]
     save_atomic(os.path.join(out, "ORDER봇_숏전략_수익률.xlsx"), lambda p: b.build(p, "ORDER", "short", fills, 1000, 5, px or 0.0, "조회 시점 시세 (자동 갱신)",
