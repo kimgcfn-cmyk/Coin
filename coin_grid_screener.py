@@ -7,7 +7,7 @@ Bitget USDT-M 선물 전체를 훑어서 '이 전략이 맞는 모양'(변동이
 사용:
   python coin_grid_screener.py                  # 후보 표만 출력 (주문·알림 없음)
   python coin_grid_screener.py --backtest 5     # 상위 5개를 coin_grid_backtest.py 로 최근 10시간 모의까지 붙여서 출력
-  python coin_grid_screener.py --notify         # 상위 후보를 디스코드 추천 채널(.env DISCORD_WEBHOOK_URL_PICKS, 없으면 기본 채널)로 알림
+  python coin_grid_screener.py --notify         # 후보가 바뀔 때(신규·제외)만 즉시, 안 바뀌면 10분마다 요약을 디스코드 추천 채널(.env DISCORD_WEBHOOK_URL_PICKS, 없으면 기본 채널)로 알림 — 매분 cron 전제
   python coin_grid_screener.py --min-volume 5000000 --top 15      # 최소 24시간 거래대금(USDT), 표시 개수
   --min-hour-volume 300000   최근 1시간 거래대금 하한(USDT, 기본 30만) — 24시간 숫자가 커도 지금 거래가 죽은 종목을 거른다
   --min-depth 1000           호가 상위 5개의 매수·매도 중 작은 쪽 합계 하한(USDT, 기본 1,000) — 20~30USDT 주문이 호가의 3% 이하가 되게
@@ -157,6 +157,51 @@ def streak_label(cnt, first, now=None):
     mins = int((now - first).total_seconds() // 60)
     return f"🔁 {cnt}번째 추천 (최초 {first.astimezone(kst).strftime('%H:%M')} KST, {mins}분째)"
 
+NOTIFY_FILE = "coin_screener_notify.json"
+SUMMARY_MIN = 10        # 후보가 안 바뀌어도 이 분마다 요약을 보낸다
+
+def _row_line(o, streak, now_utc):
+    return (f"{o['symbol']} 점수 {o['score']:.0f} · {o['kind']} · 10h 고저폭 {o['rng']:.0f}% · 고점대비 {o['from_high']:+.0f}% · 24h {o['vol24']/1e6:.0f}M · 1h {o['hour_vol']/1e3:.0f}K · 호가 {o.get('depth', 0):,.0f}"
+            + (" ⚠️" if o["warn"] else "") + f" · {streak_label(*streak[o['symbol']], now=now_utc)}")
+
+def notify_changes(ok, bad, top, now_utc=None, path=NOTIFY_FILE, send=None):
+    """매분 점검 결과를 비교해서 후보가 바뀔 때(신규·제외)만 즉시 알리고, 안 바뀌면 SUMMARY_MIN분마다 요약만 보낸다.
+    반환: 보낸 메시지 종류('변경' / '요약' / None)와 본문. send: 테스트용 전송 함수(없으면 send_picks)."""
+    import datetime as dt, os
+    send = send or send_picks
+    now_utc = now_utc or dt.datetime.now(dt.timezone.utc); now_ts = now_utc.timestamp()
+    shown = ok[:top]; cur = [o["symbol"] for o in shown]
+    try: st = json.load(open(path, encoding="utf-8"))
+    except Exception: st = {}
+    prev = st.get("symbols", []); last_ts = st.get("last_msg_ts", 0)
+    streak = update_streak(cur, now_utc)
+    new = [x for x in cur if x not in prev]; gone = [x for x in prev if x not in cur]
+    kind = None; body = None
+    foot = "※ 고저폭 12%+ · 하락 추세 아님 · 거래대금 10M+ · 최근 1시간 30만+ · 호가 깊이 1천+ 기준. 수익 보장 아님."
+    why = {o["symbol"]: " / ".join(o.get("reasons", [])[:2]) or "후보 조건 이탈" for o in bad if "symbol" in o}
+    if new or gone:
+        kind = "변경"
+        parts = ["🔔 <b>그리드 후보 변경</b> (최근 10시간 기준, 매분 점검)"]
+        if new:
+            parts.append(f"🆕 새로 들어온 후보 {len(new)}개")
+            parts += [_row_line(o, streak, now_utc) for o in shown if o["symbol"] in new]
+        if gone:
+            parts.append(f"❌ 빠진 후보 {len(gone)}개: " + ", ".join(f"{g}({why.get(g, '대상 밖')})" for g in gone))
+        stay = [x for x in cur if x not in new]
+        if stay: parts.append(f"✔️ 유지 {len(stay)}개: " + ", ".join(f"{x}({streak[x][0]}회째)" for x in stay))
+        if not cur: parts.append("현재 후보 없음")
+        body = "\n".join(parts + [foot])
+    elif cur and now_ts - last_ts >= SUMMARY_MIN * 60 - 20:
+        kind = "요약"
+        body = "\n".join([f"🔎 <b>그리드 후보 {SUMMARY_MIN}분 요약</b> (변경 없음, 최근 10시간 기준)"] + [_row_line(o, streak, now_utc) for o in shown] + [foot])
+    if kind:
+        send(body)
+        st["last_msg_ts"] = now_ts
+    st["symbols"] = cur
+    tmp = path + ".tmp"; json.dump(st, open(tmp, "w", encoding="utf-8"), ensure_ascii=False); os.replace(tmp, path)
+    print(f"\n디스코드 알림: {kind or '없음(변경 없음, 요약 시간 전)'} (신규 {len(new)} / 제외 {len(gone)} / 현재 {len(cur)}개)")
+    return kind, body
+
 def main():
     a = sys.argv[1:]
     def val(f, d=None): return a[a.index(f) + 1] if f in a and a.index(f) + 1 < len(a) else d
@@ -205,20 +250,8 @@ def main():
                 print(f"{o['symbol']:<12} 합계 {r['total']:>+7.2f} (실현 {r['realized']:+.2f} 평가 {r['unreal']:+.2f}) 매수 {r['buys']} 매도 {len(r['sells'])} 급등 {r['surge']}회 | 그냥 30USDT 보유 {30*(px[-1]/px[0]-1):+.2f}")
         except Exception as e:
             print("모의 실행 실패:", e)
-    if notify and not ok:
-        update_streak([])        # 후보가 없으면 연속 기록을 비운다
-        print("\n통과한 종목이 없어 디스코드 알림은 보내지 않음")
-    elif notify:
-        import datetime as dt
-        shown = ok[:top]
-        now_utc = dt.datetime.now(dt.timezone.utc)
-        streak = update_streak([o["symbol"] for o in shown], now_utc)
-        lines = [f"{o['symbol']} 점수 {o['score']:.0f} · {o['kind']} · 10h 고저폭 {o['rng']:.0f}% · 고점대비 {o['from_high']:+.0f}% · 24h {o['vol24']/1e6:.0f}M · 1h {o['hour_vol']/1e3:.0f}K · 호가 {o.get('depth', 0):,.0f}"
-                 + (" ⚠️" if o["warn"] else "") + f" · {streak_label(*streak[o['symbol']], now=now_utc)}" for o in shown]
-        n_rep = sum(1 for c, _ in streak.values() if c > 1)
-        head = "🔎 <b>그리드 전략 후보 종목</b> (최근 10시간 기준, 10분마다 점검)" + (f"\n🔁 직전에도 추천한 종목 {n_rep}개 / 🆕 신규 {len(streak) - n_rep}개" if shown else "")
-        send_picks(head + "\n" + ("\n".join(lines) if lines else "통과한 종목 없음") + "\n※ 고저폭 12%+ · 하락 추세 아님 · 거래대금 10M+ · 최근 1시간 30만+ · 호가 깊이 1천+ 기준. 수익 보장 아님.")
-        print("\n디스코드 알림 전송 완료")
+    if notify:
+        notify_changes(ok, bad, top)
 
 if __name__ == "__main__":
     main()

@@ -32,6 +32,7 @@ Bitget USDT-M 선물 전 종목을 주기적으로 훑어서, 단기간에 가�
 [2026-10-26 개선 — 그리드 봇 전략과 맞추기]
   - 알림 대상: 24시간 거래대금 5M 이상(기존 1M) + 봇 운용 종목(own_symbols: ORDER·CAP·T)은 거래대금과 상관없이 항상 감시, 알림에 ⭐ 표시
   - 알림에 10시간 등락·고점 대비·호가 깊이·스프레드·유동성 판정(봇이 거래할 만한 수준인지)을 함께 표시
+  - 메시지 빈도: 새 급등 알림과 "관찰 종료"(알림 후 60분)는 즉시, 관찰 중인 종목이 있으면 10분마다 요약 1건만 (cron 5분 주기 전제)
   - 사후 추적: 알림 1시간·4시간 뒤 가격 변화와 그 사이 최고·최저를 coin_surge_outcomes.json 에 자동 기록 → --outcomes 로 확인,
     12시간 생존 알림에 평균 결과를 같이 보냄, 맥의 coin_excel_export.py 가 엑셀(급등알림_사후추적.xlsx)로 만든다
   - 알림 문구는 "추격 매수 신호 아님 / 펌프 후 되돌림 관찰"로 바꿈 (최근 알림 9건 중 7건이 이후 하락했으나 표본이 적어 보장 아님)
@@ -82,6 +83,8 @@ CFG = {
     "outcome_file"     : "coin_surge_outcomes.json",  # 알림 사후 추적 기록
     "outcome_minutes"  : [60, 240],                   # 알림 후 이 시간(분)이 지난 첫 점검에서 가격 변화를 기록
     "outcome_keep_days": 14,
+    "summary_min"      : 10,                          # 관찰 중인 급등 종목 요약 간격(분). 새 알림·관찰 종료는 즉시, 나머지는 이 간격으로만
+    "watch_min"        : 60,                          # 알림 후 이 시간(분) 동안을 "관찰 중"으로 본다(= 쿨다운 시간과 같음)
     "exclude"          : ["TQQQUSDT", "PLTRUSDT"],    # 그리드 봇이 따로 운용 중인 종목
     "windows"          : [(5, 5.0)],                          # (분, 상승률% 기준) — 5분 +5% 이상
     "history_keep_min" : 15,                          # 가격 샘플 보관 시간 (구간 5분 + 여유)
@@ -396,6 +399,43 @@ def build_message(c: dict, ratio: float, ratio24: float, ex: dict = None) -> str
               "ℹ️ 알림 1시간·4시간 뒤 결과는 자동 기록됩니다 (최근 표본에서는 오른 뒤 내려간 경우가 많았지만 표본이 적어 보장은 아닙니다)."]
     return "\n".join(lines)
 
+def build_watch_messages(state: dict, tickers: dict, now: int, new_syms: list) -> list:
+    """관찰 중인 급등 종목(알림 후 watch_min분 이내) 기준으로: 관찰이 끝난 종목은 즉시 1건, 나머지는 summary_min분마다 요약 1건.
+    새 알림은 기존 상세 알림이 즉시 나가므로 여기서는 요약 타이머만 초기화한다."""
+    watch = CFG["watch_min"] * 60
+    active = {s: a for s, a in state.get("alerted", {}).items() if now - a["ts"] < watch}
+    msgs = []
+    prev = state.get("active_prev")
+    removed = [s for s in (prev or []) if s not in active]
+    def chg(sym, a):
+        t = tickers.get(sym)
+        return None if not t else (t["price"] / a["price"] - 1) * 100
+    if removed:
+        lines = []
+        for s in removed:
+            a = state.get("alerted", {}).get(s)
+            c = chg(s, a) if a else None
+            lines.append(f"{s}: 알림가 {fmt_price(a['price'])} → " + (f"현재 {c:+.1f}%" if c is not None else "시세 조회 불가") if a else f"{s}: 기록 없음")
+        msgs.append("🏁 <b>급등 관찰 종료</b> (알림 후 " + str(CFG["watch_min"]) + "분 경과)\n" + "\n".join(lines))
+    if new_syms:
+        state["last_summary_ts"] = now
+    elif active and now - state.get("last_summary_ts", 0) >= CFG["summary_min"] * 60 - 30:
+        lines = []
+        for s, a in sorted(active.items(), key=lambda x: -x[1]["ts"]):
+            c = chg(s, a); h = state.get("hist", {}).get(s, []); c5 = change_over(h, now, 5, tickers[s]["price"]) if (h and s in tickers) else None
+            lines.append(f"{s}: 알림 {(now - a['ts']) // 60}분 전 · 알림가 {fmt_price(a['price'])} → " + (f"현재 {c:+.1f}%" if c is not None else "조회 불가") + (f" · 최근 5분 {c5:+.1f}%" if c5 is not None else ""))
+        msgs.append(f"🔎 <b>급등 관찰 {CFG['summary_min']}분 요약</b> (관찰 중 {len(active)}개 — 새 급등이 없으면 이 요약만 옵니다)\n" + "\n".join(lines))
+        state["last_summary_ts"] = now
+    state["active_prev"] = list(active)
+    return msgs
+
+def _send_watch(msgs: list, send: bool):
+    for m in msgs:
+        if send:
+            send_discord(m); time.sleep(0.5)
+        else:
+            print("\n  [--check, 발송 생략]\n  " + m.replace("<b>", "").replace("</b>", "").replace("\n", "\n  "))
+
 def build_heartbeat(outcome_text: str = "") -> str:
     conds = " / ".join(f"{fmt_window(m)} {t:.1f}%↑" for m, t in CFG["windows"])
     return (f"🔍 <b>스캔 진행중</b>\n"
@@ -475,6 +515,7 @@ def run_check(send: bool = True):
             state.setdefault("alerted", {})[sym] = {"ts": now, "price": c["price"]}
             if send: record_alert(outcomes, c, ratio, ratio24, ex, now)
 
+    watch_msgs = build_watch_messages(state, tickers, now, [a[0]["symbol"] for a in alerts]) if send else []
     # 24시간 지난 알림 기록 정리
     state["alerted"] = {s: a for s, a in state.get("alerted", {}).items()
                         if now - a["ts"] < 86400}
@@ -485,7 +526,8 @@ def run_check(send: bool = True):
         print("  (--check 모드: 상태 저장 생략)")
 
     if not alerts:
-        print("\n  알림 없음")
+        print("\n  알림 없음" + (f" (관찰 메시지 {len(watch_msgs)}건)" if watch_msgs else ""))
+        _send_watch(watch_msgs, send)
         return
     for c, ratio, ratio24, ex in alerts:
         msg = build_message(c, ratio, ratio24, ex)
@@ -495,8 +537,9 @@ def run_check(send: bool = True):
         else:
             print("\n  [--check, 발송 생략]")
             print("  " + msg.replace("<b>", "").replace("</b>", "").replace("\n", "\n  "))
+    _send_watch(watch_msgs, send)
     if send:
-        print(f"\n  ✅ 알림 {len(alerts)}건 발송")
+        print(f"\n  ✅ 알림 {len(alerts)}건 발송" + (f" + 관찰 메시지 {len(watch_msgs)}건" if watch_msgs else ""))
 
 # ══════════════════════════════════════════════════════
 #  진단 도구
