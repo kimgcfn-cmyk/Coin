@@ -127,6 +127,7 @@ CFG = {
     "trend_pct"       : 5.0,               # 하락 추세 진입 기준(12시간 변화율 -5% 이하)
     "trend_release_pct": 2.5,              # 해제 기준: 12시간 변화율이 -2.5% 위로 올라오면 정상 그리드 복귀(히스테리시스)
     "trend_lookback_h": 12,
+    "trend_up_block"  : False,             # (숏 봇) True면 12시간 변화율이 +trend_pct% 이상인 상승 추세에서 신규 숏 진입·급락 추격 숏을 막는다(보유 숏의 환매·손절은 그대로, 2026-10-26)
     "trend_hedge_usdt": 0.0,               # (숏 봇) 하락 추세에서 채울 숏 목표 규모(명목 USDT). 0이면 환매 중지 없이 필터만 표시
     "auto_trade"      : False,             # 기본은 모의(paper). 실전은 --live 로 켠다
     "state_file"      : "",
@@ -417,9 +418,9 @@ def _pnl_footer(state: dict, price: float) -> str:
 #  그리드 로직
 # ══════════════════════════════════════════════════════
 def update_trend(state: dict, price: float, now_ts: float, send: bool = True) -> int:
-    """12시간 추세 필터 상태를 갱신하고 flag를 돌려준다: -1=하락 추세 중, 0=보통. (trend_filter가 꺼져 있으면 항상 0)
+    """12시간 추세 필터 상태를 갱신하고 flag를 돌려준다: -1=하락 추세 중, 0=보통, +1=상승 추세 중(숏 봇 trend_up_block일 때만). (trend_filter가 꺼져 있으면 항상 0)
     12시간 전 가격은 15분봉으로 5분에 한 번만 조회해 state에 캐시한다. 조회 실패 시 직전 값을 그대로 쓴다(없으면 필터 해제).
-    진입 -trend_pct% 이하, 해제 -trend_release_pct% 초과(히스테리시스). 백테스트(2026-10-26): CAP·14개 코인 하락 추세 26구간에서 합계 -319 → -23 USDT."""
+    진입 -trend_pct% 이하, 해제 -trend_release_pct% 초과(히스테리시스). trend_up_block이 켜져 있으면 +trend_pct% 이상은 flag=+1(상승 추세, 해제 +trend_release_pct% 미만). 백테스트(2026-10-26): CAP·14개 코인 하락 추세 26구간에서 합계 -319 → -23 USDT."""
     if not CFG.get("trend_filter"):
         return 0
     try:
@@ -437,14 +438,24 @@ def update_trend(state: dict, price: float, now_ts: float, send: bool = True) ->
         state["trend_flag"] = 0; state.pop("trend_T", None)
         return 0
     T = (price / ref - 1) * 100; state["trend_T"] = round(T, 2)
-    flag = state.get("trend_flag", 0)
-    if flag == 0 and T <= -CFG.get("trend_pct", 5.0):
+    flag = state.get("trend_flag", 0); pct = CFG.get("trend_pct", 5.0); rel = CFG.get("trend_release_pct", 2.5); up_on = CFG.get("trend_up_block")
+    if flag == 1 and not up_on:
+        flag = 0
+    if flag == 0 and T <= -pct:
         flag = -1; msg = f"📉 <b>{CFG['symbol']} 12시간 하락 추세 필터 켜짐</b> ({T:+.1f}%)\n롱: 신규 매수 중단 / 숏: 숏을 들고 가며 그리드 환매 중지"
         print(f"  📉 12시간 변화 {T:+.1f}% — 하락 추세 필터 켜짐")
         if send: send_discord(msg)
-    elif flag == -1 and T > -CFG.get("trend_release_pct", 2.5):
+    elif flag == 0 and up_on and T >= pct:
+        flag = 1; msg = f"📈 <b>{CFG['symbol']} 12시간 상승 추세 필터 켜짐</b> ({T:+.1f}%)\n숏: 신규 진입·급락 추격 중단 (보유 숏의 환매 감시와 손절은 계속)"
+        print(f"  📈 12시간 변화 {T:+.1f}% — 상승 추세 필터 켜짐 (신규 숏 중단)")
+        if send: send_discord(msg)
+    elif flag == -1 and T > -rel:
         flag = 0; msg = f"▶️ <b>{CFG['symbol']} 12시간 하락 추세 필터 해제</b> ({T:+.1f}%)\n정상 그리드로 복귀합니다"
         print(f"  ▶️ 12시간 변화 {T:+.1f}% — 하락 추세 필터 해제")
+        if send: send_discord(msg)
+    elif flag == 1 and T < rel:
+        flag = 0; msg = f"▶️ <b>{CFG['symbol']} 12시간 상승 추세 필터 해제</b> ({T:+.1f}%)\n신규 숏 진입을 재개합니다"
+        print(f"  ▶️ 12시간 변화 {T:+.1f}% — 상승 추세 필터 해제")
         if send: send_discord(msg)
     state["trend_flag"] = flag
     return flag

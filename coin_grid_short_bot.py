@@ -146,7 +146,7 @@ def run_check(send=True):
                 state.update(crash_chase=True, crash_low=price, crash_k=0, crash_start=now)
                 print(f"  📉 급락 감지 — {CFG['surge_window_min']}분 고점 {hi:,.6g} → {price:,.6g} ({(price/hi-1)*100:.1f}%)")
                 note = ""
-                cu = CFG.get("surge_chase_usdt", 0.0)
+                cu = 0.0 if (CFG.get("trend_up_block") and state.get("trend_flag") == 1) else CFG.get("surge_chase_usdt", 0.0)   # 12시간 상승 추세에서는 급락 추격 숏 안 함
                 if cu > 0:
                     if state.get("holdings_usdt", 0.0) + cu > CFG["max_total_usdt"]:
                         note = "\n추격 숏은 한도 때문에 건너뜁니다."; print("  ⚠️ 추격 숏 건너뜀 — 한도 초과")
@@ -264,7 +264,9 @@ def run_check(send=True):
     if price >= up and spacing_wait:
         print(f"  진입 간격 대기 — 직전 숏 진입가 {le_:,.6g} 대비 +{CFG['step_pct']:g}% 더 올라야({le_ * (1 + CFG['step_pct'] / 100):,.6g} 이상) 추가 진입 (기준가 {ref:,.6g})")
     elif price >= up:
-        if paused:
+        if CFG.get("trend_up_block") and state.get("trend_flag") == 1:
+            print(f"  📈 12시간 상승 추세({state.get('trend_T', 0):+.1f}%) — 신규 숏 진입 보류 (보유 숏의 환매 감시는 계속, 기준가 {ref:,.6g})")
+        elif paused:
             print(f"  신규 숏 중단 중 — 숏 진입 보류 (기준가 {ref:,.6g})")
         elif state.get("holdings_usdt", 0.0) >= CFG["max_total_usdt"]:
             print(f"  ⚠️ 총 숏 한도({CFG['max_total_usdt']:.0f}USDT) 도달 — 진입 중단")
