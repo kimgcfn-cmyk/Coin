@@ -6,7 +6,7 @@ build(...) 하나로 숏/롱 봇의 체결 목록을 받아 수식이 들어간 
 import json
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.chart import LineChart, Reference
+from openpyxl.chart import LineChart, ScatterChart, Series, Reference
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.formula import Tokenizer
 from openpyxl.utils import get_column_letter as L
@@ -143,7 +143,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     pa = "진입가" if short else "매수가"
     heads = ["No", "일시(KST)", "구분", "내용", "체결수량(개)", "체결금액(USDT)", "체결가(USDT)", "수수료율", "거래수수료(USDT)", "펀딩비(USDT, 입력)",
              "보유수량(거래 후)", "보유금액(USDT)\n레버리지 반영(명목)", "보유금액(USDT)\n레버리지 미반영(증거금)", "평균 " + pa, "미배분 진입수수료", "배분된 진입수수료", "실현손익 수수료 전(USDT)", "순손익 수수료 후(USDT)",
-             "수익률 수수료 전", "수익률 수수료 후", "누적 손익 수수료 전(USDT)", "누적 순손익 수수료 후(USDT)", "누적 수익률 수수료 전", "누적 수익률 수수료 후", "누적 수수료(USDT)"]
+             "수익률 수수료 전", "수익률 수수료 후", "누적 손익 수수료 전(USDT)", "누적 순손익 수수료 후(USDT)", "누적 수익률 수수료 전", "누적 수익률 수수료 후", "누적 수수료(USDT)", "경과시간(시간)"]
     HR = 4
     for j, h in enumerate(heads, 1):
         c = t.cell(HR, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
@@ -176,17 +176,18 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
         t.cell(x, 21, f'={gd}N(U{p})+Q{x})'); t.cell(x, 22, f'={gd}N(V{p})+R{x})')
         t.cell(x, 23, f"={gd}U{x}/'설명·가정'!$B$10)"); t.cell(x, 24, f"={gd}V{x}/'설명·가정'!$B$10)")
         t.cell(x, 25, f'={gd}N(Y{p})+I{x})')
-        for j in range(1, 26):
+        t.cell(x, 26, f'={gd}ROUND((DATEVALUE(LEFT($B{x},10))+TIMEVALUE(MID($B{x},12,5))-DATEVALUE(LEFT($B${first},10))-TIMEVALUE(MID($B${first},12,5)))*24,4))')
+        for j in range(1, 27):
             c = t.cell(x, j); c.font = f_in if j in (2, 3, 4, 5, 6, 10) else f_norm; c.border = box
             if d and d["label"] and not isE(d["label"]) and not short and False: pass
             if d and not (isE(d["label"])): c.fill = fill_cover
             if j in (1, 3, 4): c.alignment = Alignment(horizontal="center")
     fm = {5: "#,##0", 6: "#,##0.00", 7: "0.000000", 8: "0.00%", 9: "0.0000", 10: "0.0000;[Red]-0.0000;-", 11: "#,##0", 12: "#,##0.00;;-", 13: "#,##0.00;;-", 14: "0.000000;;-", 15: "0.0000;;-", 16: "0.0000;;-",
           17: "0.0000;[Red]-0.0000;-", 18: "0.0000;[Red]-0.0000;-", 19: "0.00%;[Red]-0.00%;-", 20: "0.00%;[Red]-0.00%;-", 21: "0.0000;[Red]-0.0000;-", 22: "0.0000;[Red]-0.0000;-",
-          23: "0.00%;[Red]-0.00%;-", 24: "0.00%;[Red]-0.00%;-", 25: "0.0000"}
+          23: "0.00%;[Red]-0.00%;-", 24: "0.00%;[Red]-0.00%;-", 25: "0.0000", 26: "0.00"}
     for x in range(first, last + 1):
         for j, f in fm.items(): t.cell(x, j).number_format = f
-    for j, w in enumerate([5, 17, 9, 18, 12, 14, 13, 9, 13, 12, 13, 17, 17, 13, 13, 13, 15, 15, 11, 11, 16, 16, 13, 13, 12], 1): t.column_dimensions[L(j)].width = w
+    for j, w in enumerate([5, 17, 9, 18, 12, 14, 13, 9, 13, 12, 13, 17, 17, 13, 13, 13, 15, 15, 11, 11, 16, 16, 13, 13, 12, 12], 1): t.column_dimensions[L(j)].width = w
     t.freeze_panes = t.cell(first, 5)
     dv = DataValidation(type="list", formula1=f'"{ENT},{EXT}"', allow_blank=True); t.add_data_validation(dv); dv.add(f"C{first}:C{last}")
 
@@ -225,9 +226,19 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
         s.cell(r, 1).border = box; c.border = box
     s.column_dimensions["A"].width = 40; s.column_dimensions["B"].width = 18
     s["A27"] = "※ 수수료 비중 = 총 수수료 ÷ 수수료 전 실현손익. 미실현은 현재가(설명·가정 시트 B11) 기준 추정입니다."; s["A27"].font = f_note
-    ch = LineChart(); ch.title = "누적 순손익 (수수료 후, USDT)"; ch.y_axis.title = "USDT"; ch.x_axis.title = "체결 번호"
-    ch.add_data(Reference(t, min_col=22, min_row=HR, max_row=last), titles_from_data=True)
-    ch.set_categories(Reference(t, min_col=1, min_row=first, max_row=last)); ch.height = 8; ch.width = 18; s.add_chart(ch, "D3")
+    last_filled = first + len(fills) - 1 if fills else first
+    ch = ScatterChart(); ch.title = "누적 순손익 (수수료 후, USDT)"; ch.style = 2
+    ch.x_axis.title = "경과시간 (시간, 첫 체결 기준)"; ch.y_axis.title = "누적 순손익 (USDT)"
+    xs = Reference(t, min_col=26, min_row=first, max_row=last_filled); ys = Reference(t, min_col=22, min_row=first, max_row=last_filled)
+    se = Series(ys, xs, title="누적 순손익"); se.marker.symbol = "circle"; se.marker.size = 5; se.smooth = False
+    se.graphicalProperties.line.width = 22000; se.graphicalProperties.line.solidFill = "1F3864"
+    se.marker.graphicalProperties.solidFill = "1F3864"; se.marker.graphicalProperties.line.solidFill = "1F3864"
+    ch.series.append(se)
+    ch.legend = None                                   # 색인표(범례) 제거
+    ch.x_axis.delete = False; ch.y_axis.delete = False  # 축 눈금·숫자 표시
+    ch.y_axis.number_format = '#,##0.00'; ch.x_axis.number_format = '0.0'
+    ch.x_axis.tickLblPos = "low"; ch.y_axis.tickLblPos = "low"        # 누적 손익이 마이너스여도 눈금 숫자는 가장자리에 표시
+    ch.height = 10; ch.width = 22; s.add_chart(ch, "D3")
     # 수식 구문 점검(괄호 균형)
     bad = 0
     for ws in wb:
