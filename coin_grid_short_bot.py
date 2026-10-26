@@ -36,6 +36,8 @@ CFG.setdefault("rally_fast_win_min", 1)
 CFG.setdefault("entry_spacing", False)       # True면 추가 숏은 직전 진입가에서 step_pct% 더 올랐을 때만 (평균가 기준에서 매분 연속 진입되는 것 방지, 2026-10-26)
 CFG.setdefault("ref_mode", "sma")           # 기준가 방식: "sma"=직전 ref_sma_min분 평균가(매분 갱신, 2026-10-26부터 숏 봇 기본전략), "last"=마지막 체결가(이전 방식)
 CFG.setdefault("ref_sma_min", 5)             # sma 모드의 평균 구간(분, 최대 14 — 시세 기록이 15분만 남음)
+CFG.setdefault("trend_ladder", [])               # 하락 추세 모드의 반등 사다리: 저점 대비 +N%마다 보유 물량(사다리 시작 시점)의 1/단계수씩 환매. 예: [1,2,3,4,5] (비우면 끔, 2026-10-26)
+CFG.setdefault("trend_ladder_confirm", 3)       # 각 단계선 위에 이 횟수(분)만큼 연속으로 머물러야 환매
 CFG.setdefault("cover_min_profit_pct", 0.0)  # 그리드 환매는 현재가가 평균 진입가보다 이 %만큼 낮을 때만 (0/None=끔, 기본 끔). 급락 모드 단계 환매·강제 손절에는 적용 안 함
 FEE_FB = 0.0006
 
@@ -116,10 +118,23 @@ def run_check(send=True):
     # ①-b 12시간 하락 추세 필터(2026-10-26): 하락 추세면 숏을 trend_hedge_usdt까지 시장가로 채우고 그리드 환매·급락 모드를 쉬며 들고 간다
     if CFG.get("trend_filter"):
         g.update_trend(state, price, t, send)
-        if state.get("trend_flag") == -1 and CFG.get("trend_hedge_usdt", 0) > 0:
-            tgt = min(CFG["trend_hedge_usdt"], CFG["max_total_usdt"]); hold = state.get("holdings_usdt", 0.0); msg = None
-            u = min(100.0, tgt - hold)
-            if u >= 6 and not state.get("rally_on"):
+        if state.get("trend_flag") != -1:
+            for k_ in ("tr_trough", "tr_k", "tr_n", "tr_base", "tr_rehedge_below"): state.pop(k_, None)     # 하락 추세가 끝나면 사다리 기록을 지운다
+        else:
+            lad = CFG.get("trend_ladder") or []; msg = None
+            if "tr_trough" not in state:                                   # 저점 기준: 최근 60분 1분봉 저점과 현재가 중 낮은 값
+                try:
+                    rows = g.get_exchange().fetch_ohlcv(CFG["symbol"], "1m", limit=60)
+                    state["tr_trough"] = min([price] + [r[3] for r in rows])
+                except Exception:
+                    state["tr_trough"] = price
+            low = min(state["tr_trough"], price)
+            if low < state["tr_trough"]: state["tr_n"] = 0                  # 새 저점이 나오면 연속 확인 횟수는 처음부터
+            state["tr_trough"] = low
+            k = state.get("tr_k", 0); qty_now = state.get("qty", 0.0); floor = state.get("tr_rehedge_below")
+            tgt = min(CFG.get("trend_hedge_usdt", 0.0), CFG["max_total_usdt"]); hold = state.get("holdings_usdt", 0.0)
+            if k == 0 and tgt > 0 and (floor is None or price < floor) and min(100.0, tgt - hold) >= 6 and not state.get("rally_on"):
+                u = min(100.0, tgt - hold)                                  # 하락 추세 보강: 목표 규모까지 시장가로 채운다(사다리 진행 중에는 채우지 않음)
                 ok, detail, q, info = _short_order(price, u, send)
                 if ok:
                     aq = info.get("filled_qty", q); _open(state, aq, info.get("avg_price", price), info.get("fee"))
@@ -129,6 +144,35 @@ def run_check(send=True):
                 else:
                     print(f"  ❌ 하락 추세 숏 보강 실패: {detail}")
                     if not ("40762" in detail or "exceeds the balance" in detail): msg = f"❌ <b>{CFG['symbol']} 하락 추세 숏 보강 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
+            elif lad and qty_now > 0 and k < len(lad):
+                line = low * (1 + lad[k] / 100); conf = CFG.get("trend_ladder_confirm", 3)
+                n = state.get("tr_n", 0) + 1 if price >= line else 0
+                state["tr_n"] = n
+                avg_ = state.get("avg_cost"); cmp_ = CFG.get("cover_min_profit_pct")
+                in_profit = not (cmp_ is not None and avg_ and price > avg_ * (1 - cmp_ / 100))
+                print(f"  📉 12시간 하락 추세({state.get('trend_T', 0):+.1f}%) — 숏 {hold:.0f} USDT 보유, 사다리 {k + 1}/{len(lad)}단계 (저점 {low:,.6g} +{lad[k]:g}% = {line:,.6g}, 현재 {price:,.6g}, 확인 {n}/{conf})")
+                if price >= line and n >= conf and in_profit:
+                    base = state.get("tr_base") or qty_now; state["tr_base"] = base
+                    cq = qty_now if k == len(lad) - 1 else min(base / len(lad), qty_now)
+                    if cq * price < 6 or qty_now - cq < 6 / price: cq = qty_now
+                    ok, detail, q, info = _cover_order(price, 0, send, qty=cq)
+                    if ok:
+                        aq = info.get("filled_qty", cq); fp = info.get("avg_price", price); before = state.get("cum_pnl", 0.0)
+                        _cover(state, aq, fp, info.get("fee")); old = qty_now; state["qty"] = max(0.0, old - aq)
+                        state["holdings_usdt"] = 0.0 if state["qty"] <= 1e-9 else state.get("holdings_usdt", 0.0) * (state["qty"] / old)
+                        if k == 0: state["tr_rehedge_below"] = low                  # 첫 단계 환매 뒤에는 저점을 새로 깨기 전까지 다시 채우지 않는다
+                        k += 1; state["tr_k"] = k; state["tr_n"] = 0
+                        if k >= len(lad) or state["qty"] <= 1e-9:                   # 사다리 완료: 다음 하락 때 다시 시작할 수 있게 초기화(저점 아래로 새로 내려가야 보강)
+                            state["tr_k"] = 0; state.pop("tr_base", None)
+                        pnl = state.get("cum_pnl", 0.0) - before
+                        print(f"  💰 사다리 {k}단계 환매: {detail}")
+                        msg = _msg(state, f"💰 <b>{CFG['symbol']} 하락 추세 반등 사다리 {k}/{len(lad)}단계 환매</b> (저점 {low:,.6g} 대비 +{lad[k - 1]:g}%)\n📦 환매 {aq:.6f}개 @ {fp:,.6g}\n실현 {pnl:+.2f} USDT (수수료 포함)\n남은 숏 {state['qty']:.6f}개", price)
+                    else:
+                        print(f"  ❌ 사다리 환매 실패: {detail}")
+                        if g.no_position_error(detail): msg = g.zero_book(state, "사다리 환매가 거절됨(25227).")
+                        elif not state.get("ladder_fail_notified"): msg = f"❌ <b>{CFG['symbol']} 사다리 환매 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"; state["ladder_fail_notified"] = True
+                elif price >= line and n >= conf and not in_profit:
+                    print(f"  (단계선 도달했지만 평균 진입가 {avg_:,.6g}보다 높아 환매 보류 — 손실 구간 환매 안 함)")
             else:
                 print(f"  📉 12시간 하락 추세({state.get('trend_T', 0):+.1f}%) — 숏 {hold:.0f}/{tgt:.0f} USDT 보유, 그리드 환매 중지하고 들고 감")
             if send:
