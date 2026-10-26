@@ -95,6 +95,8 @@ CFG = {
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
     "guard_leverage"  : False,             # 계정 레버리지가 달라도 주문 보류하지 않음
     "trail_exit_pct"  : 15.0,              # 고점 대비 -15% 하락 시 봇 물량 전량 청산 후 정지 (BIRB는 2026-10-24 -12%→-15%로 넓힘; 급등 이벤트 모의에서 -15%가 평균 최고)
+    "ref_mode"        : "last",            # 기준가 방식: "last"=마지막 체결가(기본, 래칫), "sma"=직전 ref_sma_min분 평균가(매분 갱신). CAP는 2026-10-26부터 sma 5분
+    "ref_sma_min"     : 5,                 # sma 모드의 평균 구간(분, 최대 14 — 시세 기록이 15분만 남음)
     "shadow_modes"    : [],                # 그림자 모드: 실거래 없이 "직전 N분 평균가를 기준가로 쓰는" 가상 거래를 병렬로 기록. 예: [5, 10] (2026-10-26 CAP용)
     "shadow_slip"     : 0.0028,            # 가상 거래의 편도 슬리피지(백테스트와 같은 값)
     "trail_rest_min"  : 0,                 # (trail_action="liquidate"일 때) 고점 청산 후 이 분만큼 쉬고 자동 재개. 0이면 청산 후 정지(--resume 필요). 2026-10-26 CAP용 추가
@@ -623,6 +625,11 @@ def _shadow_new_mode() -> dict:
     return {"qty": 0.0, "cash": 0.0, "hold": 0.0, "avg": 0.0, "peak": 0.0, "crash": False, "low": 0.0, "low_t": 0.0, "rest_until": 0.0,
             "fees": 0.0, "buys": 0, "sells": 0, "wins": 0, "trails": 0, "crashes": 0, "realized": 0.0, "eq_peak": 0.0, "mdd": 0.0}
 
+def _record_ref_hist(state: dict, price: float, now_ts: float) -> None:
+    """점검 때마다 시세 샘플을 15분치 남긴다. 평균가 기준가(ref_mode=sma)와 급락 감지가 함께 쓴다(급등 모드 켜짐 여부와 무관)."""
+    h = [x for x in state.get("ref_hist", []) if now_ts - x[0] <= 900]
+    h.append([now_ts, price]); state["ref_hist"] = h
+
 def shadow_step(state: dict, price: float, now_ts: float, now_str: str) -> None:
     """매 점검(약 1분)마다 호출. 모드별(N분 평균가)로 가상 매수·매도·트레일 청산·급락 대응을 모의하고 파일에 저장한다.
     규칙은 백테스트(sma_eval)와 같다: 기준가=직전 N분 평균, 매수=기준가-step_pct%, 매도=기준가+sell_step_pct%, 트레일 청산 후 휴식, 5분 -8% 급락 시 매수 중단."""
@@ -714,6 +721,8 @@ def run_check(send: bool = True):
         return
     print(f"  현재가: {price:,.4f} USDT")
 
+    _record_ref_hist(state, price, time.time())
+
     if send and CFG.get("shadow_modes"):
         try:
             shadow_step(state, price, time.time(), now)
@@ -740,7 +749,7 @@ def run_check(send: bool = True):
     # 급락 대응 — 5분 내 -8% 급락이면 신규 매수 중단, 저점 +2% 반등 또는 30분간 새 저점 없으면 재개
     if CFG.get("crash_mode") and not state.get("surge"):
         tnow = time.time()
-        hist = [h for h in state.get("px_hist", []) if tnow - h[0] <= CFG["crash_window_min"] * 60 + 30]
+        hist = [h for h in (state.get("ref_hist") or state.get("px_hist", [])) if tnow - h[0] <= CFG["crash_window_min"] * 60 + 30]
         if not state.get("crash_on"):
             hi = max([p for _, p in hist] + [price])
             if price <= hi * (1 - CFG["crash_pct"] / 100):
@@ -865,7 +874,15 @@ def run_check(send: bool = True):
 
     # 봇 물량이 없으면 기준가를 상승에 따라 올린다 — 안 그러면 다 팔고 난 뒤 기준가가 마지막 매도가에 머물러
     # 이후 상승분을 놓치고, 그 가격의 -1%까지 내려와야만 다시 산다 (2026-10-24 추가)
-    if state.get("mode") != "short" and state.get("qty", 0.0) <= 0 and price > (state.get("reference_price") or price):
+    if CFG.get("ref_mode") == "sma" and state.get("mode") != "short":
+        n_ = min(int(CFG.get("ref_sma_min", 5)), 14); tnow_ = time.time()
+        prev_ = [p_ for ts_, p_ in (state.get("ref_hist") or [])[:-1] if tnow_ - ts_ <= n_ * 60 + 30]     # 현재가를 뺀 직전 n분 시세 기록
+        if len(prev_) < max(2, n_ - 1):
+            print(f"  😴 {n_}분 평균가 준비 중 ({len(prev_)}/{n_}개 기록) — 이번 점검은 거래 보류")
+            if send: save_state(state)
+            return
+        state["reference_price"] = sum(prev_) / len(prev_)
+    if CFG.get("ref_mode") != "sma" and state.get("mode") != "short" and state.get("qty", 0.0) <= 0 and price > (state.get("reference_price") or price):
         print(f"  ⬆️ 봇 물량 없음 — 기준가 {state['reference_price']:,.4f} → {price:,.4f} (상승 추종)")
         state["reference_price"] = price
 
@@ -1221,7 +1238,7 @@ if __name__ == "__main__":
 
     if "--resume" in args:
         st = load_state()
-        for k in ("halted", "halted_reason", "rest_until", "rest_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason", "surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k", "surge_below_n", "px_hist", "crash_on", "crash_low", "crash_low_t"):
+        for k in ("halted", "halted_reason", "rest_until", "rest_reason", "peak_price", "trail_fail_notified", "buy_paused", "buy_paused_reason", "surge", "surge_peak", "surge_start", "surge_fail_notified", "surge_base", "surge_k", "surge_below_n", "px_hist", "ref_hist", "crash_on", "crash_low", "crash_low_t"):
             st.pop(k, None)
         px = fetch_price(CFG["symbol"])
         if px > 0:
