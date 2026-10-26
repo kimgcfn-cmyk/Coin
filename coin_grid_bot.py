@@ -803,6 +803,8 @@ def run_check(send: bool = True):
         print(f"  ❌ {CFG['symbol']} 시세 조회 실패 — --find-symbol 로 정확한 심볼 확인 필요")
         return
     print(f"  현재가: {price:,.4f} USDT")
+    if 0 < state.get("qty", 0.0) * price < 0.05:          # 부동소수점 잔량 정리 (롱 봇도 같은 문제 가능, 2026-10-27)
+        state["qty"] = 0.0; state["holdings_usdt"] = 0.0
 
     _record_ref_hist(state, price, time.time())
     update_trend(state, price, time.time(), send)

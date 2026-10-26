@@ -94,6 +94,8 @@ def run_check(send=True):
         if send: g.save_state(state)
         return
     t, hist = _hist(state, price)
+    if 0 < state.get("qty", 0.0) * price < 0.05:          # 부동소수점 잔량(예: 1e-11개)이 남으면 '숏 있음'으로 보고 0수량 환매를 반복하므로 가치 5센트 미만은 0으로 정리한다 (2026-10-27)
+        state["qty"] = 0.0; state["holdings_usdt"] = 0.0
     qty = state.get("qty", 0.0); msg = None
 
     # ① 강제 손절
