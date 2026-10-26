@@ -7,6 +7,9 @@ import json
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.chart import LineChart, ScatterChart, Series, Reference
+from openpyxl.chart.layout import Layout, ManualLayout
+from openpyxl.chart.shapes import GraphicalProperties
+from openpyxl.drawing.line import LineProperties
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.formula import Tokenizer
 from openpyxl.utils import get_column_letter as L
@@ -231,14 +234,20 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     ch.x_axis.title = "경과시간 (시간, 첫 체결 기준)"; ch.y_axis.title = "누적 순손익 (USDT)"
     xs = Reference(t, min_col=26, min_row=first, max_row=last_filled); ys = Reference(t, min_col=22, min_row=first, max_row=last_filled)
     se = Series(ys, xs, title="누적 순손익"); se.marker.symbol = "circle"; se.marker.size = 5; se.smooth = False
-    se.graphicalProperties.line.width = 22000; se.graphicalProperties.line.solidFill = "1F3864"
-    se.marker.graphicalProperties.solidFill = "1F3864"; se.marker.graphicalProperties.line.solidFill = "1F3864"
+    se.graphicalProperties.line.width = 22000; se.graphicalProperties.line.solidFill = "2E7D32"      # 초록
+    se.marker.graphicalProperties.solidFill = "2E7D32"; se.marker.graphicalProperties.line.solidFill = "2E7D32"
     ch.series.append(se)
     ch.legend = None                                   # 색인표(범례) 제거
     ch.x_axis.delete = False; ch.y_axis.delete = False  # 축 눈금·숫자 표시
     ch.y_axis.number_format = '#,##0.00'; ch.x_axis.number_format = '0.0'
     ch.x_axis.tickLblPos = "low"; ch.y_axis.tickLblPos = "low"        # 누적 손익이 마이너스여도 눈금 숫자는 가장자리에 표시
-    ch.height = 10; ch.width = 22; s.add_chart(ch, "D3")
+    # 글씨가 그래프 위에 겹치지 않게: 제목은 그래프 밖(위), 가로축 제목은 아래, 세로축 제목은 왼쪽 바깥에 두고 그래프 영역을 안쪽으로 줄인다
+    for ttl in (ch.title, ch.x_axis.title, ch.y_axis.title):
+        ttl.overlay = False
+    ch.layout = Layout(manualLayout=ManualLayout(layoutTarget="inner", xMode="edge", yMode="edge", x=0.11, y=0.14, w=0.85, h=0.64))
+    for ax in (ch.x_axis, ch.y_axis):
+        ax.majorGridlines.spPr = GraphicalProperties(ln=LineProperties(solidFill="D9D9D9", w=6350))   # 눈금선은 연한 회색
+    ch.height = 11; ch.width = 22; s.add_chart(ch, "D3")
     # 수식 구문 점검(괄호 균형)
     bad = 0
     for ws in wb:
