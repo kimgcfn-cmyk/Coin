@@ -27,6 +27,20 @@ BOTS = [
       dict(t="2026-10-26 15:34", label="수동 롱 편입 매수", amt=216.2, qty=1954.0),
       dict(t="2026-10-26 15:46", label="수동 청산 매도", amt=57.0, qty=548.0),
       dict(t="2026-10-26 15:47", label="수동 청산 매도", amt=237.7, qty=2335.0)]),
+    ("CAP 숏", "short", "CAPUSDT", "coin_grid_short_cap", "coin_grid_short_cap_state.json", False,
+     # 봇 장부에 편입·정정한 수동 숏 거래(거래소 체결 기준) — 엑셀 CAP봇_숏전략_수익률.xlsx의 EXTRA["CAP_S"]와 같은 값
+     [dict(t="2026-10-26 14:30", label="수동 숏 편입", amt=434.88, qty=3978.0),
+      dict(t="2026-10-26 15:07", label="수동 숏 편입", amt=397.2, qty=3766.0),
+      dict(t="2026-10-26 15:18", label="수동 청산 환매", amt=451.5, qty=4236.0),
+      dict(t="2026-10-26 15:52", label="수동 숏 편입", amt=117.53, qty=1133.0),
+      dict(t="2026-10-26 16:06", label="수동 청산 환매", amt=140.5, qty=1431.0),
+      dict(t="2026-10-26 16:14", label="수동 청산 환매", amt=71.9, qty=730.0),
+      dict(t="2026-10-26 16:16", label="수동 숏 편입", amt=162.0, qty=1672.0),
+      dict(t="2026-10-26 16:38", label="수동 숏 편입", amt=154.4, qty=1695.0),
+      dict(t="2026-10-26 16:46", label="수동 청산 환매", amt=185.3, qty=2063.0),
+      dict(t="2026-10-26 16:47", label="수동 청산 환매", amt=93.4, qty=1031.0),
+      dict(t="2026-10-26 16:48", label="수동 숏 편입", amt=408.3, qty=4612.0),
+      dict(t="2026-10-26 18:10", label="수동 정정 청산 환매", amt=272.78, qty=3037.0)]),
     ("IRYS 롱(모의)", "long", "IRYSUSDT", "coin_grid_irys", "coin_grid_irys_state.json", True, []),
     ("IRYS 숏(모의)", "short", "IRYSUSDT", "coin_grid_short_irys", "coin_grid_short_irys_state.json", True, []),
 ]
@@ -55,7 +69,7 @@ def parse_fills(name, extra):
 
 def exits_net(fills, side):
     """평균단가법 + 진입 수수료 배분. 반환: [(시각, 순손익)] (환매·매도만), 마지막 보유수량."""
-    is_entry = (lambda l: "진입" in l or "추격" in l) if side == "short" else (lambda l: "매수" in l)
+    is_entry = (lambda l: "진입" in l or "추격" in l or "보강" in l or "편입" in l) if side == "short" else (lambda l: "매수" in l)
     q = avg = pool = 0.0; out = []
     for r in fills:
         f = r["amt"] * FEE
