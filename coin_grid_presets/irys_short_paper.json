@@ -1,0 +1,18 @@
+{
+  "name": "irys_short_paper",
+  "symbol": "IRYS/USDT:USDT",
+  "설명": "IRYS 숏 그림자(모의 체결) — ORDER 숏과 같은 규칙(5분 평균 기준, 진입 +0.5%/100·환매 −1%/200, 한도 1000, 평균가 +10% 손절)을 실제 주문 없이 가상으로 돌려 관찰한다 (2026-10-26). 디스코드 전송 없음.",
+  "cfg": {
+    "step_pct": 0.5,
+    "sell_step_pct": 1.0,
+    "order_usdt": 100,
+    "sell_order_usdt": 200,
+    "max_total_usdt": 1000,
+    "leverage": 1,
+    "short_stop_pct": 10.0,
+    "surge_chase_usdt": 200,
+    "ref_mode": "sma",
+    "ref_sma_min": 5,
+    "paper": true
+  }
+}

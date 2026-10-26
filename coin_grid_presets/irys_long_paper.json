@@ -1,0 +1,23 @@
+{
+  "name": "irys_long_paper",
+  "symbol": "IRYS/USDT:USDT",
+  "설명": "IRYS 롱 그림자(모의 체결) — CAP 롱과 같은 규칙(5분 평균 기준, 매수 −0.5%/100·매도 +1%/200, 한도 1000, 급등 모드, 트레일 −10%+2시간 휴식)을 실제 주문 없이 가상으로 돌려 IRYS에 맞는지 관찰한다 (2026-10-26). 디스코드·원장 기록 없음.",
+  "cfg": {
+    "step_pct": 0.5,
+    "sell_step_pct": 1.0,
+    "order_usdt": 100,
+    "sell_order_usdt": 200,
+    "max_total_usdt": 1000,
+    "leverage": 1,
+    "surge_chase_usdt": 200,
+    "trail_exit_pct": 10.0,
+    "trail_action": "liquidate",
+    "trail_rest_min": 120,
+    "shadow_modes": [],
+    "shadow_slip": 0.0028,
+    "ref_mode": "sma",
+    "ref_sma_min": 5,
+    "surge_mode": true,
+    "paper": true
+  }
+}

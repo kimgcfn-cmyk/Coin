@@ -75,7 +75,7 @@ except ImportError:
 
 def _record(side: str, time_str: str, price: float, note: str = ""):
     """체결 기록 실패가 실거래 로직에 영향 주지 않도록 별도 방어."""
-    if not HAS_LEDGER:
+    if not HAS_LEDGER or CFG.get("paper"):   # 모의(paper) 거래는 원장·엑셀에 기록하지 않는다
         return
     try:
         trade_ledger.append_trade(CFG["symbol"].split("/")[0].upper(), side, time_str, price, note)
@@ -95,6 +95,8 @@ CFG = {
     "leverage"        : 1,                 # 수량 계산용(명목 = order_usdt × 1). 교차 마진이라 계정 레버리지는 증거금 사용량에만 영향
     "guard_leverage"  : False,             # 계정 레버리지가 달라도 주문 보류하지 않음
     "trail_exit_pct"  : 15.0,              # 고점 대비 -15% 하락 시 봇 물량 전량 청산 후 정지 (BIRB는 2026-10-24 -12%→-15%로 넓힘; 급등 이벤트 모의에서 -15%가 평균 최고)
+    "paper"           : False,             # True면 거래소 주문 없이 모의 체결만(상태·로그는 실거래 봇과 동일하게 쌓임). 디스코드·원장 기록도 생략 (2026-10-26 IRYS 그림자용)
+    "paper_slip"      : 0.0028,            # 모의 체결 슬리피지(편도)
     "ref_mode"        : "last",            # 기준가 방식: "last"=마지막 체결가(기본, 래칫), "sma"=직전 ref_sma_min분 평균가(매분 갱신). CAP는 2026-10-26부터 sma 5분
     "ref_sma_min"     : 5,                 # sma 모드의 평균 구간(분, 최대 14 — 시세 기록이 15분만 남음)
     "shadow_modes"    : [],                # 그림자 모드: 실거래 없이 "직전 N분 평균가를 기준가로 쓰는" 가상 거래를 병렬로 기록. 예: [5, 10] (2026-10-26 CAP용)
@@ -131,6 +133,9 @@ def _html_to_discord_markdown(text: str) -> str:
     return text
 
 def send_discord(text: str) -> bool:
+    if CFG.get("paper"):      # 모의(paper) 거래는 디스코드로 보내지 않는다(로그에만 남김)
+        print("  (모의 거래 — 디스코드 전송 생략)")
+        return False
     if not DISCORD_WEBHOOK_URL:
         print("  (디스코드 웹훅 미설정 — 콘솔 출력만)")
         print(text)
@@ -292,6 +297,14 @@ def place_order(symbol: str, side: str, margin_usdt: float, price: float,
     if dry_run:
         info = {"cost": notional, "avg_price": price, "filled_qty": qty, "estimated": True}
         return True, f"--check 모드 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty, info
+    if CFG.get("paper"):
+        # 모의 체결: 거래소를 전혀 부르지 않고 현재가에 슬리피지(paper_slip)를 반영한 체결을 가정한다. 수수료 0.04%는 봇 장부가 계산한다.
+        if qty <= 0:
+            return False, "수량 계산 오류(가격 0)", 0, {}
+        fp = price * (1 + CFG.get("paper_slip", 0.0028)) if side == "buy" else price * (1 - CFG.get("paper_slip", 0.0028))
+        q = round(qty, 6); cost = q * fp; fee = cost * 0.0004
+        info = {"cost": cost, "avg_price": fp, "filled_qty": q, "estimated": False, "fee": fee}
+        return True, (f"체결 완료 (주문ID {int(time.time() * 1000)}, 금액 {cost:,.2f}USDT, 체결가 {fp:,.6f}, 수량 {q:.6f}) [모의 체결]"), q, info
     if not CFG["auto_trade"]:
         info = {"cost": notional, "avg_price": price, "filled_qty": qty, "estimated": True}
         return True, f"auto_trade 꺼짐 — 실제 주문 없음(알림만, {lev}배 노출 {notional:.0f}USDT 가정)", qty, info
