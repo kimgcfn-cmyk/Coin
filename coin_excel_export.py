@@ -15,7 +15,7 @@ from coin_excel_builder import add_shadow_sheet
 OUT = "/Users/Muita/Desktop/Coin/코인봇수익률"
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "trading-ec2"]
 BOTS = {"T": ("coin_grid_short_t", "TUSDT"), "ORDER": ("coin_grid_short_order", "ORDERUSDT"), "CAP": ("coin_grid_cap", "CAPUSDT"),
-        "IRYS_L": ("coin_grid_irys", "IRYSUSDT"), "IRYS_S": ("coin_grid_short_irys", "IRYSUSDT")}   # IRYS는 모의(paper) 거래 — 실제 주문 없음
+        "CAP_S": ("coin_grid_short_cap", "CAPUSDT"), "IRYS_L": ("coin_grid_irys", "IRYSUSDT"), "IRYS_S": ("coin_grid_short_irys", "IRYSUSDT")}   # IRYS는 모의(paper) 거래 — 실제 주문 없음
 # 로그에 없는 체결(사용자 지시로 직접 낸 청산 주문). 주문 응답 값이고 시각은 근사다.
 EXTRA = {"T": [dict(t="2026-10-25 22:47", label="수동 청산 환매", id="manual-t-close", amt=251.8573, qty=45160.0)],
          # 사용자가 직접 추가한 ORDER 숏 2,230개를 봇 장부에 편입(평균가 0.042681). 로그에 없는 건이라 직접 입력, 시각은 근사
@@ -231,6 +231,15 @@ def main():
         strategy=dict(subtitle="CAP 가격이 기준가 대비 −0.5% 눌리면 사고 +1% 오르면 파는 롱 그리드 전략에 급등 추격·급락 대응·트레일링 청산(−10%, 2시간 휴식)을 더한 구성입니다. 10/26 11:55부터 기준가를 직전 5분 평균으로 쓰고, B5·B10 그림자 모드는 가상 비교를 계속합니다. 현재 가동 중입니다.",
                       rules=CAP_RULES, params=CAP_PARAMS, history=CAP_HIST, fit=CAP_FIT, backtests=CAP_BT),
         extra=lambda wb: add_shadow_sheet(wb, shadow, state, px)))
+    # ── CAP 숏 (10/26 13:05 롱에서 전환) ──
+    fl, stt, pxx = res["CAP_S"]
+    CAPS_HIST = [
+     ("10/26 13:05", "CAP 숏 봇 가동: 기준가 직전 5분 평균, 진입 +0.5%/100, 환매 −1%/200, 추격 200, 한도 1000, 진입 간격 규칙, 평균가 +10% 손절, 5배", "CAP 롱 봇(이전 −77.7 USDT 실현, 수동 청산)을 중지하고 숏으로 전환. 사용자 수동 숏(약 4,400개)은 봇 장부에서 제외하고 분리"),
+    ]
+    save_atomic(os.path.join(out, "CAP봇_숏전략_수익률.xlsx"), lambda p: b.build(p, "CAP 숏", "short", fl, 1000, 5, pxx or 0.0, "조회 시점 시세 (자동 갱신)",
+        (f"서버 봇 로그의 실제 체결 {len(fl)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST." if fl else f"CAP 숏 봇은 2026-10-26 13:05 KST에 시작했고 아직 체결이 없습니다(평균 5분 준비·진입 신호 대기). 마지막 갱신 {now} KST."),
+        ["· 거래소의 사용자 수동 CAP 숏은 봇 거래가 아니라 이 표에 넣지 않았습니다.", "· CAP 롱 봇의 이전 거래는 CAP봇_롱전략_수익률.xlsx에 있습니다."], spare=0 if fl else 60,
+        strategy=mk_short("ORDER", "프리셋 max_total_usdt 1000", CAPS_HIST, "CAP 가격이 직전 5분 평균 대비 +0.5% 오를 때 숏을 쌓고 −1% 내리면 회수하는 숏 그리드입니다. 롱에서 전환해 10/26 13:05부터 가동 중이며, 수동 숏은 분리합니다.")))
     # ── IRYS 그림자(모의 체결) ──
     for key, side, title, fname in (("IRYS_L", "long", "IRYS 롱(가상)", "IRYS_롱_가상거래.xlsx"), ("IRYS_S", "short", "IRYS 숏(가상)", "IRYS_숏_가상거래.xlsx")):
         fl, stt, pxx = res[key]
