@@ -24,7 +24,9 @@ BOTS = [
       dict(t="2026-10-26 13:35", label="수동 청산 매도", amt=577.4808, qty=5352.0),
       dict(t="2026-10-26 14:12", label="수동 롱 편입 매수", amt=425.1, qty=3766.0),
       dict(t="2026-10-26 15:07", label="수동 청산 매도", amt=397.2, qty=3766.0),
-      dict(t="2026-10-26 15:34", label="수동 롱 편입 매수", amt=216.2, qty=1954.0)]),
+      dict(t="2026-10-26 15:34", label="수동 롱 편입 매수", amt=216.2, qty=1954.0),
+      dict(t="2026-10-26 15:46", label="수동 청산 매도", amt=57.0, qty=548.0),
+      dict(t="2026-10-26 15:47", label="수동 청산 매도", amt=237.7, qty=2335.0)]),
     ("IRYS 롱(모의)", "long", "IRYSUSDT", "coin_grid_irys", "coin_grid_irys_state.json", True, []),
     ("IRYS 숏(모의)", "short", "IRYSUSDT", "coin_grid_short_irys", "coin_grid_short_irys_state.json", True, []),
 ]
