@@ -23,7 +23,7 @@ EXTRA = {"T": [dict(t="2026-10-25 22:47", label="수동 청산 환매", id="manu
 LC = "='설명·가정'!B6"; LV = "='설명·가정'!B7"; FE = "='설명·가정'!B5"
 
 def short_rules(name):
-    sma = (name == "ORDER")
+    sma = (name in ("ORDER", "T"))
     return [
      (("기준가 (직전 5분 평균)", "직전 5분 동안 1분마다 기록한 시세의 평균(현재가 제외). 매 점검(1분)마다 새로 계산합니다. 가동 직후 5분은 기록이 모자라 거래하지 않습니다.", "체결과 상관없이 시장 평균이 기준입니다. 숏 물량이 없을 때 기준가가 가격을 따라 내려가는 규칙은 없어졌습니다.") if sma else
       ("기준가", "마지막 체결가(처음 가동 시에는 그때 시세). 숏 물량이 없을 때 가격이 내려가면 기준가도 따라 내려갑니다.", "기준가를 기준으로 진입·환매 신호를 판단하고, 체결될 때마다 기준가를 체결가로 바꿉니다.")),
@@ -61,8 +61,8 @@ SHORT_BT = [
  "· 환매에 '평균가보다 0.2% 이상 낮을 때만' 조건을 붙인 안은 합계 −115 vs −168로 나았지만 상승 구간 방어는 못 해 적용하지 않고 원래대로 되돌렸습니다.",
 ]
 def mk_short(name, cap_note, history, subtitle):
-    bt = SHORT_BT + (SMA_SHORT_BT if name == "ORDER" else [])
-    return dict(subtitle=subtitle, rules=short_rules(name), params=short_params(cap_note, name == "ORDER"), history=history, fit=SHORT_FIT, backtests=bt)
+    bt = SHORT_BT + (SMA_SHORT_BT if name in ("ORDER", "T") else [])
+    return dict(subtitle=subtitle, rules=short_rules(name), params=short_params(cap_note, name in ("ORDER", "T")), history=history, fit=SHORT_FIT, backtests=bt)
 
 SMA_SHORT_BT = [
  "· 기준가를 직전 N분 평균으로 바꾼 숏 백테스트(14종목 28구간, 슬리피지 0.28%): 현재 방식 −707 USDT, 5분 평균 −377, 10분 −751, 30분 −1,041. 5분 평균은 횡보(+40 대 −181)·하락(+237 대 +19) 구간에서 낫고 상승 구간에서는 더 나빴습니다(−654 대 −545). ORDER 자기 구간(2개)에서는 5분 평균이 오히려 더 나빴습니다(−40/−128 대 −23/−117).",
@@ -76,6 +76,8 @@ T_HIST = [
  ("10/25 22:08", "환매 −1%에 100 USDT, 급락 추격 100 USDT", "ORDER와 함께 변경"),
  ("10/25 22:33~22:44", "환매 '평균가 대비 0.2% 이익일 때만' 조건을 켰다가 원래대로 끔", ""),
  ("10/25 22:47", "사용자 지시로 봇 중지 및 숏 45,160개 시장가 전량 청산", "마지막 체결 행(수동 청산)"),
+ ("10/26 11:37", "T 숏 봇 재가동 (기준가·저점을 현재가 0.004914로 재설정)", "이전 누적 실현 +6.90 USDT 이어서 계산"),
+ ("10/26 11:45", "기준가를 직전 5분 평균가(ref_mode=sma)로 변경 — 이제 숏 봇의 기본전략", "ORDER와 동일. 마지막 체결가 방식으로 되돌리려면 ref_mode=last"),
 ]
 O_HIST = [
  ("10/25 16:46", "ORDER 숏 봇 가동: 진입 +1%에 100 USDT, 환매 −2%에 150 USDT, 한도 1000, 레버리지 5배", "TUSDT 설정을 복사해 시작"),
@@ -192,9 +194,9 @@ def main():
     # ── T ──
     fills, state, px = res["T"]
     save_atomic(os.path.join(out, "T봇_숏전략_수익률.xlsx"), lambda p: b.build(p, "T(TUSDT)", "short", fills, 1000, 5, px or 0.0, "조회 시점 시세 (자동 갱신)",
-        f"서버 봇 로그의 실제 체결 {len(fills)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST. T 봇은 현재 중지 상태입니다.",
+        f"서버 봇 로그의 실제 체결 {len(fills)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST.",
         ["· 마지막 행(10/25 22:47 KST 수동 청산)은 로그에 없는 체결이라 주문 응답 값을 직접 넣었고 시각은 근사입니다.", "· 기간 중 한도 200→1000, 진입 20→100→50 USDT, 레버리지 10→3→5배로 설정이 바뀌었습니다. 기준 자본은 현재 설정(1000÷5) 기준입니다."],
-        strategy=mk_short("T", "프리셋 max_total_usdt 1000 (첫 가동 때는 200)", T_HIST, "TUSDT 가격이 기준가 대비 +0.5% 오를 때 숏을 쌓고 −1% 내리면 회수하는 '반대(숏) 그리드' 전략입니다. 현재 중지 상태이며 이 파일은 마지막 설정을 요약합니다.")))
+        strategy=mk_short("T", "프리셋 max_total_usdt 1000 (첫 가동 때는 200)", T_HIST, "TUSDT 가격이 기준가 대비 +0.5% 오를 때 숏을 쌓고 −1% 내리면 회수하는 '반대(숏) 그리드' 전략입니다. 10/26 11:37에 재가동했고 이 파일은 현재 설정을 요약합니다.")))
     # ── ORDER ──
     fills, state, px = res["ORDER"]
     save_atomic(os.path.join(out, "ORDER봇_숏전략_수익률.xlsx"), lambda p: b.build(p, "ORDER", "short", fills, 1000, 5, px or 0.0, "조회 시점 시세 (자동 갱신)",
