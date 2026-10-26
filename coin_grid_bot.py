@@ -97,6 +97,7 @@ CFG = {
     "trail_exit_pct"  : 15.0,              # 고점 대비 -15% 하락 시 봇 물량 전량 청산 후 정지 (BIRB는 2026-10-24 -12%→-15%로 넓힘; 급등 이벤트 모의에서 -15%가 평균 최고)
     "paper"           : False,             # True면 거래소 주문 없이 모의 체결만(상태·로그는 실거래 봇과 동일하게 쌓임). 디스코드·원장 기록도 생략 (2026-10-26 IRYS 그림자용)
     "paper_slip"      : 0.0028,            # 모의 체결 슬리피지(편도)
+    "entry_spacing"   : False,             # True면 추가 매수는 직전 매수가에서 step_pct% 더 내려왔을 때만 (평균가 기준에서 매분 연속 매수되는 것 방지, 2026-10-26)
     "ref_mode"        : "last",            # 기준가 방식: "last"=마지막 체결가(기본, 래칫), "sma"=직전 ref_sma_min분 평균가(매분 갱신). CAP는 2026-10-26부터 sma 5분
     "ref_sma_min"     : 5,                 # sma 모드의 평균 구간(분, 최대 14 — 시세 기록이 15분만 남음)
     "shadow_modes"    : [],                # 그림자 모드: 실거래 없이 "직전 N분 평균가를 기준가로 쓰는" 가상 거래를 병렬로 기록. 예: [5, 10] (2026-10-26 CAP용)
@@ -425,6 +426,9 @@ def check_grid(state: dict, price: float) -> dict:
             return {"action": None, "reason": f"급락 대응 — 신규 매수 중단 중 (저점 {state.get('crash_low', 0):,.4f}, 반등 시 재개)"}
         if state.get("buy_paused"):
             return {"action": None, "reason": f"신규 매수 중단 중({state.get('buy_paused_reason', '')}) — 보유분만 매도 감시 (기준가 {ref:,.4f}, 매도트리거 {rise_trigger:,.4f})"}
+        le = state.get("last_entry_price")
+        if CFG.get("entry_spacing") and state.get("qty", 0.0) > 0 and le and price > le * (1 - step):
+            return {"action": None, "reason": f"진입 간격 대기 — 직전 매수가 {le:,.4f} 대비 -{CFG['step_pct']:g}% 더 내려와야({le * (1 - step):,.4f} 이하) 추가 매수 (기준가 {ref:,.4f})"}
         invested = state.get("holdings_usdt", 0.0)
         if CFG.get("stop_loss") and (state.get("stop_active") or invested >= CFG["max_total_usdt"]):
             if state.get("qty", 0.0) <= 0:
@@ -709,8 +713,11 @@ def shadow_step(state: dict, price: float, now_ts: float, now_str: str) -> None:
         if len(pm) < max(2, n - 1):
             track(); lines.append(f"B{n} 평균 준비중({len(pm)}/{n})"); continue
         r = sum(pm) / len(pm)
+        if m["qty"] <= 0: m["last_buy"] = 0.0
         if price <= r * (1 - bs / 100):
-            if not m["crash"] and m["hold"] < cap: buy(bu)
+            if CFG.get("entry_spacing") and m.get("last_buy") and price > m["last_buy"] * (1 - bs / 100):
+                pass                                    # 진입 간격 대기
+            elif not m["crash"] and m["hold"] < cap: buy(bu); m["last_buy"] = price
         elif m["qty"] > 0 and price >= r * (1 + ss / 100):
             q = su / price
             if m["qty"] - q < q * 0.5: q = m["qty"]
@@ -927,6 +934,7 @@ def run_check(send: bool = True):
             state["qty"] = state.get("qty", 0.0) + actual_qty
             state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["order_usdt"]
             state["reference_price"] = price   # 래칫: 기준가를 더 아래로
+            state["last_entry_price"] = price  # 진입 간격 규칙용 직전 매수가
             est_note = " (추정치)" if info.get("estimated") else ""
             msg = (f"🟢 <b>{CFG['symbol']} 매수</b> ({CFG['step_pct']:.0f}% 하락)\n"
                    f"💰 매수 금액: {info.get('cost', 0):,.2f} USDT{est_note}\n"

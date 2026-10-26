@@ -33,6 +33,7 @@ CFG = g.CFG
 CFG.setdefault("short_stop_pct", 10.0)
 CFG.setdefault("rally_fast_pct", 3.0)        # 급등 보호(빠른 쪽): rally_fast_win_min분 안에 이 %만큼 오르면 신규 숏 중단 (0=끔)
 CFG.setdefault("rally_fast_win_min", 1)
+CFG.setdefault("entry_spacing", False)       # True면 추가 숏은 직전 진입가에서 step_pct% 더 올랐을 때만 (평균가 기준에서 매분 연속 진입되는 것 방지, 2026-10-26)
 CFG.setdefault("ref_mode", "sma")           # 기준가 방식: "sma"=직전 ref_sma_min분 평균가(매분 갱신, 2026-10-26부터 숏 봇 기본전략), "last"=마지막 체결가(이전 방식)
 CFG.setdefault("ref_sma_min", 5)             # sma 모드의 평균 구간(분, 최대 14 — 시세 기록이 15분만 남음)
 CFG.setdefault("cover_min_profit_pct", 0.0)  # 그리드 환매는 현재가가 평균 진입가보다 이 %만큼 낮을 때만 (0/None=끔, 기본 끔). 급락 모드 단계 환매·강제 손절에는 적용 안 함
@@ -235,7 +236,11 @@ def run_check(send=True):
         state["reference_price"] = ref = price
     up = ref * (1 + CFG["step_pct"] / 100); down = ref * (1 - CFG.get("sell_step_pct", CFG["step_pct"]) / 100)
     paused = state.get("buy_paused") or state.get("rally_on")
-    if price >= up:
+    le_ = state.get("last_entry_price")
+    spacing_wait = bool(CFG.get("entry_spacing") and qty > 0 and le_ and price < le_ * (1 + CFG["step_pct"] / 100))
+    if price >= up and spacing_wait:
+        print(f"  진입 간격 대기 — 직전 숏 진입가 {le_:,.6g} 대비 +{CFG['step_pct']:g}% 더 올라야({le_ * (1 + CFG['step_pct'] / 100):,.6g} 이상) 추가 진입 (기준가 {ref:,.6g})")
+    elif price >= up:
         if paused:
             print(f"  신규 숏 중단 중 — 숏 진입 보류 (기준가 {ref:,.6g})")
         elif state.get("holdings_usdt", 0.0) >= CFG["max_total_usdt"]:
@@ -246,7 +251,7 @@ def run_check(send=True):
             ok, detail, q, info = _short_order(price, CFG["order_usdt"], send)
             if ok:
                 aq = info.get("filled_qty", q); _open(state, aq, info.get("avg_price", price), info.get("fee"))
-                state["qty"] = state.get("qty", 0.0) + aq; state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["order_usdt"]; state["reference_price"] = price
+                state["qty"] = state.get("qty", 0.0) + aq; state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["order_usdt"]; state["reference_price"] = price; state["last_entry_price"] = price
                 print(f"  🔻 숏 진입: {detail}")
                 msg = _msg(state, f"🔻 <b>{CFG['symbol']} 숏 진입</b> (+{CFG['step_pct']:g}% 상승)\n💰 금액: {info.get('cost', 0):,.2f} USDT\n💵 체결가: {info.get('avg_price', price):,.6g}\n📦 수량: {aq:.6f}개\n누적 숏: {state['holdings_usdt']:.0f} / {CFG['max_total_usdt']:.0f} USDT\n{detail}", price)
             else:
