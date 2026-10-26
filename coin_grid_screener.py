@@ -7,7 +7,7 @@ Bitget USDT-M 선물 전체를 훑어서 '이 전략이 맞는 모양'(변동이
 사용:
   python coin_grid_screener.py                  # 후보 표만 출력 (주문·알림 없음)
   python coin_grid_screener.py --backtest 5     # 상위 5개를 coin_grid_backtest.py 로 최근 10시간 모의까지 붙여서 출력
-  python coin_grid_screener.py --notify         # 상위 후보를 디스코드로 알림(coin_grid_bot.send_discord 사용)
+  python coin_grid_screener.py --notify         # 상위 후보를 디스코드 추천 채널(.env DISCORD_WEBHOOK_URL_PICKS, 없으면 기본 채널)로 알림
   python coin_grid_screener.py --min-volume 5000000 --top 15      # 최소 24시간 거래대금(USDT), 표시 개수
   --min-hour-volume 300000   최근 1시간 거래대금 하한(USDT, 기본 30만) — 24시간 숫자가 커도 지금 거래가 죽은 종목을 거른다
   --min-depth 1000           호가 상위 5개의 매수·매도 중 작은 쪽 합계 하한(USDT, 기본 1,000) — 20~30USDT 주문이 호가의 3% 이하가 되게
@@ -98,6 +98,28 @@ def fmt_row(o):
             f"2h {o['last2h']:>+6.1f}% 거래대금 {o['vol24']/1e6:>7.1f}M 1h {o['hour_vol']/1e3:>6.0f}K 호가깊이 {o.get('depth', 0):>6,.0f} 스프레드 {o['spread']:.3f}% 거래량(1h/평균) {o['vol_ratio']:>4.1f}x"
             + (f"  ⚠️ {' / '.join(o['warn'])}" if o['warn'] else ""))
 
+def send_picks(text: str) -> bool:
+    """추천 종목 알림은 별도 디스코드 채널(DISCORD_WEBHOOK_URL_PICKS)로 보낸다. 값이 없거나 전송에 실패하면 기존 채널(coin_grid_bot.send_discord)로 대신 보낸다."""
+    import coin_grid_bot as g
+    url = ""
+    try:
+        import config as _cfg
+        url = (_cfg._get("DISCORD_WEBHOOK_URL_PICKS") if hasattr(_cfg, "_get") else getattr(_cfg, "DISCORD_WEBHOOK_URL_PICKS", "")) or ""
+    except Exception:
+        pass
+    if url:
+        try:
+            content = g._html_to_discord_markdown(text)
+            if len(content) > 1900: content = content[:1900] + "\n…(생략)"
+            r = requests.post(url, json={"content": content}, timeout=10)
+            if r.status_code in (200, 204): return True
+            print(f"  추천 채널 전송 실패(HTTP {r.status_code}) — 기존 채널로 대신 보냅니다")
+        except Exception as e:
+            print(f"  추천 채널 전송 오류({type(e).__name__}) — 기존 채널로 대신 보냅니다")
+    else:
+        print("  (DISCORD_WEBHOOK_URL_PICKS 없음 — 기존 채널로 보냅니다)")
+    return g.send_discord(text)
+
 def main():
     a = sys.argv[1:]
     def val(f, d=None): return a[a.index(f) + 1] if f in a and a.index(f) + 1 < len(a) else d
@@ -151,7 +173,7 @@ def main():
     elif notify:
         import coin_grid_bot as g
         lines = [f"{o['symbol']} 점수 {o['score']:.0f} · {o['kind']} · 10h 고저폭 {o['rng']:.0f}% · 고점대비 {o['from_high']:+.0f}% · 24h {o['vol24']/1e6:.0f}M · 1h {o['hour_vol']/1e3:.0f}K · 호가 {o.get('depth', 0):,.0f}" + (" ⚠️" if o["warn"] else "") for o in ok[:top]]
-        g.send_discord("🔎 <b>그리드 전략 후보 종목</b> (최근 10시간 기준)\n" + ("\n".join(lines) if lines else "통과한 종목 없음") + "\n※ 고저폭 12%+ · 하락 추세 아님 · 거래대금 10M+ · 최근 1시간 30만+ · 호가 깊이 1천+ 기준. 수익 보장 아님.")
+        send_picks("🔎 <b>그리드 전략 후보 종목</b> (최근 10시간 기준)\n" + ("\n".join(lines) if lines else "통과한 종목 없음") + "\n※ 고저폭 12%+ · 하락 추세 아님 · 거래대금 10M+ · 최근 1시간 30만+ · 호가 깊이 1천+ 기준. 수익 보장 아님.")
         print("\n디스코드 알림 전송 완료")
 
 if __name__ == "__main__":
