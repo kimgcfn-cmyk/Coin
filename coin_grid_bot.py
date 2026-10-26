@@ -41,6 +41,8 @@
   - auto_trade 꺼진 모의 모드는 안전한 '일시정지'가 아니다(추정 체결로 상태가 움직임). 멈추려면 cron을 주석 처리한다.
   - 상태 파일을 손으로 고칠 때는 봇의 flock 잠금을 건 상태에서 고친다(덮어쓰기 경쟁 방지).
 
+[전략 분류] 롱 전략(이 파일 단독) · 숏 전략(coin_grid_short_bot.py 단독) · 양방향 전략(한 종목에 롱·숏 봇을 동시 가동 — 별개 전략으로 구분, 정의·운용 설정은 coin_grid_pair_strategy.md, 2026-10-26)
+
 [파일] coin_grid_bot.py(이 파일) · coin_grid_backtest.py(모의) · trade_ledger.py(원장/엑셀) · coin_surge_monitor.py(급등 탐지 알림)
 """
 

@@ -18,5 +18,6 @@
     "surge_mode": true,
     "entry_spacing": true,
     "sell_min_profit_pct": 0
-  }
+  },
+  "전략유형": "양방향(롱숏 동시) — coin_grid_pair_strategy.md 참고"
 }
