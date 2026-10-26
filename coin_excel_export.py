@@ -138,7 +138,7 @@ def fetch_remote():
     names = " ".join(v[0] for v in BOTS.values())
     cmd = ("cd /home/ec2-user/trading-bot && for n in %s; do echo \"##LOG $n\"; "
            "for f in $(ls -tr logs/$n.log* 2>/dev/null); do zcat -f \"$f\" | grep -E \"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{5} UTC|체결 완료 \\(주문ID\"; done; "
-           "echo \"##STATE $n\"; cat ${n}_state.json 2>/dev/null; echo; done; echo \"##SHADOW cap\"; cat coin_grid_cap_shadow.json 2>/dev/null; echo") % names
+           "echo \"##STATE $n\"; cat ${n}_state.json 2>/dev/null; echo; done; echo \"##SHADOW cap\"; cat coin_grid_cap_shadow.json 2>/dev/null; echo; echo \"##OUTCOME surge\"; cat coin_surge_outcomes.json 2>/dev/null; echo") % names
     r = subprocess.run(SSH + [cmd], capture_output=True, text=True, timeout=90)
     if r.returncode != 0 and not r.stdout:
         raise RuntimeError("서버 로그를 읽지 못했습니다: " + r.stderr.strip()[:200])
@@ -147,7 +147,7 @@ def fetch_remote():
 def split_sections(txt):
     sec = {}; cur = None
     for line in txt.splitlines():
-        m = re.match(r"##(LOG|STATE|SHADOW) (\S+)", line)
+        m = re.match(r"##(LOG|STATE|SHADOW|OUTCOME) (\S+)", line)
         if m: cur = (m.group(1), m.group(2)); sec[cur] = []; continue
         if cur: sec[cur].append(line)
     return sec
@@ -213,6 +213,12 @@ def main():
         strategy=dict(subtitle="CAP 가격이 기준가 대비 −0.5% 눌리면 사고 +1% 오르면 파는 롱 그리드 전략에 급등 추격·급락 대응·트레일링 청산(−10%, 4시간 휴식)을 더한 구성입니다. 평균가 기준 전략(B5·B10)은 그림자 모드로 비교만 하고 있습니다. 현재 가동 중입니다.",
                       rules=CAP_RULES, params=CAP_PARAMS, history=CAP_HIST, fit=CAP_FIT, backtests=CAP_BT),
         extra=lambda wb: add_shadow_sheet(wb, shadow, state, px)))
+    # ── 급등 알림 사후 추적 ──
+    try: surge = json.loads("\n".join(sec.get(("OUTCOME", "surge"), [])) or "{}")
+    except Exception: surge = {}
+    REF9 = [("ERAUSDT", 32, 0.09139, 0.08426), ("BRUSDT", 257, 0.47914, 0.49658), ("AKEUSDT", 576, 0.03008, 0.031291), ("QUSDT", 650, 0.07547, 0.056556), ("SKYAIUSDT", 873, 0.03662, 0.03408),
+            ("TAGUSDT", 996, 0.0006758, 0.0004908), ("JCTUSDT", 1013, 0.007184, 0.005781), ("DOODUSDT", 1202, 0.001645, 0.001395), ("MAGMAUSDT", 1206, 0.38125, 0.34554)]
+    save_atomic(os.path.join(out, "급등알림_사후추적.xlsx"), lambda p: b.build_surge_workbook(p, surge.get("alerts", []), REF9))
     print(f"[{now} KST] 저장 완료 → {out} | T {len(res['T'][0])}건, ORDER {len(res['ORDER'][0])}건, CAP {len(res['CAP'][0])}건")
 
 if __name__ == "__main__":

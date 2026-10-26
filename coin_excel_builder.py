@@ -295,3 +295,59 @@ def add_shadow_sheet(wb, sh, state, price):
     for j, w in enumerate([22, 20, 16, 16, 18, 10, 10, 12, 16, 16], 1): ws.column_dimensions[L(j)].width = w
     ws.sheet_view.showGridLines = False
     return ws
+
+def build_surge_workbook(path, alerts, ref_rows):
+    """급등 알림 사후 추적 엑셀. alerts: coin_surge_outcomes.json 의 alerts 목록, ref_rows: 추적 시작 전 알림(참고용) [(종목, 알림 후 분, 알림가, 현재가)]."""
+    import datetime as dt
+    wb = Workbook(); ws = wb.active; ws.title = "알림 사후추적"
+    ws["A1"] = "급등 알림 사후 추적 — 알림 1시간·4시간 뒤 가격 변화"; ws["A1"].font = f_title
+    ws["A2"] = "알림가 대비 변화: 마이너스 = 알림 뒤 내려감(되돌림), 플러스 = 더 올라감. 자동 갱신 값이며 직접 고친 내용은 다음 갱신 때 덮어써집니다. 과거 결과일 뿐 투자 조언이 아닙니다."; ws["A2"].font = f_note
+    heads = ["No", "알림시각(KST)", "종목", "봇 운용", "알림가", "24시간 등락(%)", "24시간 거래대금(M USDT)", "거래량 배수(100분 대비)", "10시간 등락(%)", "10시간 고점 대비(%)",
+             "호가 깊이(USDT)", "스프레드(%)", "유동성 판정", "1시간 후 가격", "1시간 후 변화", "4시간 후 가격", "4시간 후 변화", "4시간 내 최고 변화", "4시간 내 최저 변화"]
+    HR = 17
+    for j, h in enumerate(heads, 1):
+        c = ws.cell(HR, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
+    ws.row_dimensions[HR].height = 42
+    first = HR + 1; n = max(len(alerts), 1); last = first + len(alerts) - 1 if alerts else first
+    kst = dt.timezone(dt.timedelta(hours=9))
+    for i, a in enumerate(sorted(alerts, key=lambda a: a["ts"])):
+        x = first + i
+        vals = [i + 1, dt.datetime.fromtimestamp(a["ts"], kst).strftime("%Y-%m-%d %H:%M"), a["sym"], "⭐" if a.get("own") else "", a["price"], a.get("chg24"), (a.get("vol") or 0) / 1e6,
+                a.get("ratio"), a.get("net10h"), a.get("from_high"), a.get("depth"), a.get("spread"), "OK" if a.get("liquid") else "얇음",
+                a.get("p60"), None, a.get("p240"), None, None, None]
+        for j, v in enumerate(vals, 1):
+            c = ws.cell(x, j, v); c.font = f_in if j in (5, 14, 16) else f_norm; c.border = box
+        ws.cell(x, 15, f'=IF(N{x}="","",N{x}/E{x}-1)'); ws.cell(x, 17, f'=IF(P{x}="","",P{x}/E{x}-1)')
+        hi, lo = a.get("hi240", a.get("hi")), a.get("lo240", a.get("lo"))
+        ws.cell(x, 18, (hi / a["price"] - 1) if hi else None); ws.cell(x, 19, (lo / a["price"] - 1) if lo else None)
+        for j in (15, 17, 18, 19):
+            c = ws.cell(x, j); c.font = f_norm; c.border = box; c.number_format = "0.0%;[Red]-0.0%;-"
+        ws.cell(x, 5).number_format = "0.000000"; ws.cell(x, 14).number_format = "0.000000"; ws.cell(x, 16).number_format = "0.000000"
+        for j in (6, 7, 8, 9, 10, 12): ws.cell(x, j).number_format = "0.0"
+        ws.cell(x, 11).number_format = "#,##0"
+    rg = lambda col: f"{col}{first}:{col}{last}"
+    ws["A4"] = "요약"; ws["A4"].font = f_bold
+    rows = [("기록된 알림 (건)", f"=COUNT({rg('E')})", "0"),
+            ("1시간 후 평균 변화", f'=IFERROR(AVERAGE({rg("O")}),0)', "0.0%;[Red]-0.0%;-"),
+            ("1시간 후 하락 비율", f'=IF(COUNT({rg("O")})=0,0,COUNTIF({rg("O")},"<0")/COUNT({rg("O")}))', "0%"),
+            ("4시간 후 평균 변화", f'=IFERROR(AVERAGE({rg("Q")}),0)', "0.0%;[Red]-0.0%;-"),
+            ("4시간 후 하락 비율", f'=IF(COUNT({rg("Q")})=0,0,COUNTIF({rg("Q")},"<0")/COUNT({rg("Q")}))', "0%"),
+            ("유동성 OK 종목만: 4시간 후 평균 변화", f'=IFERROR(AVERAGEIFS({rg("Q")},{rg("M")},"OK"),0)', "0.0%;[Red]-0.0%;-")]
+    for i, (lab, f, fmt) in enumerate(rows):
+        ws.cell(5 + i, 1, lab).font = f_norm; c = ws.cell(5 + i, 2, f); c.font = f_bold; c.number_format = fmt
+        ws.cell(5 + i, 1).border = box; c.border = box
+    ws["D4"] = "참고: 사후 추적 시작 전 알림 9건 (알림가 → 2026-10-26 10:2x KST 시세)"; ws["D4"].font = f_bold
+    for j, h in enumerate(["종목", "알림 후(분)", "알림가", "그때 시세", "변화"], 4):
+        c = ws.cell(5, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
+    # 참고표는 4행~(5+9)행 영역을 쓰므로 표 머리글(HR)과 겹치지 않게 위쪽 10행 안에 둔다
+    for i, (sym, mins, p0, p1) in enumerate(ref_rows[:9]):
+        r = 6 + i
+        if r >= HR - 1: break
+        for j, v in enumerate([sym, mins, p0, p1], 4):
+            c = ws.cell(r, j, v); c.font = f_norm; c.border = box
+        c = ws.cell(r, 8, f"=G{r}/F{r}-1"); c.font = f_norm; c.border = box; c.number_format = "0.0%;[Red]-0.0%;-"
+    for j, w in enumerate([8, 17, 13, 8, 12, 12, 14, 14, 12, 14, 12, 11, 11, 14, 12, 14, 12, 12, 12], 1): ws.column_dimensions[L(j)].width = w
+    ws.column_dimensions["A"].width = 34
+    ws.freeze_panes = ws.cell(first, 4)
+    wb.calculation.fullCalcOnLoad = True
+    wb.save(path)
