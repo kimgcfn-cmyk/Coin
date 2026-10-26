@@ -1,0 +1,23 @@
+{
+  "name": "q_short_300",
+  "symbol": "Q/USDT:USDT",
+  "설명": "Q 숏 그리드 — 실전 (2026-10-27 사용자 요청으로 모의에서 실전 전환). Q 롱(q_long_300)과 같은 조건: 기준가 = 직전 5분 평균가(ref_mode=sma), 평균보다 +1% 높으면 숏 50USDT, −2% 낮으면 100USDT 환매(평균 진입가 이하에서만), 한도 300USDT, 진입 간격 규칙 없음, 평균 진입가 +15% 강제 손절, 급락 모드 추격 100USDT. 12시간 변화율 필터는 쓰지 않음. ⚠️ Q는 24h +236% 급등 직후, 스프레드 0.28%, 숏 모의는 급등 구간에서 손실. 롱 봇과 같은 종목에서 함께 돌리면 양방향 전략.",
+  "cfg": {
+    "step_pct": 1.0,
+    "sell_step_pct": 2.0,
+    "order_usdt": 50,
+    "sell_order_usdt": 100,
+    "max_total_usdt": 300,
+    "leverage": 1,
+    "short_stop_pct": 15.0,
+    "surge_chase_usdt": 100,
+    "surge_mode": true,
+    "ref_mode": "sma",
+    "ref_sma_min": 5,
+    "entry_spacing": false,
+    "cover_min_profit_pct": 0.01,
+    "trend_filter": false,
+    "trend_up_block": false,
+    "paper": false
+  }
+}
