@@ -29,7 +29,8 @@ import coin_grid_bot as g
 
 CFG = g.CFG
 for k_, v_ in (("timeframe", "15m"), ("ma_fast", 5), ("ma_slow", 20), ("slope_filter", True), ("slope_bars", 3), ("direction", "both"),
-               ("stop_pct", 3.0), ("trail_pct", 3.0), ("cooldown_bars", 2), ("loss_streak_pause", 3), ("streak_pause_bars", 8)):
+               ("stop_pct", 3.0), ("trail_pct", 3.0), ("cooldown_bars", 2), ("loss_streak_pause", 3), ("streak_pause_bars", 8),
+               ("tp_pct", 0.0), ("confirm_bars", 0), ("slope_min_pct", 0.0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -37,14 +38,21 @@ def tf_ms(tf: str) -> int:
     n = int(tf[:-1]); u = tf[-1]
     return n * {"m": 60, "h": 3600, "d": 86400}[u] * 1000
 
-def signal(closes, fast, slow, slope_bars):
-    """마감된 봉 종가 목록(오래된→최신)으로 교차·기울기를 계산한다. 데이터가 모자라면 None."""
-    if len(closes) < slow + slope_bars + 1: return None
+def signal(closes, fast, slow, slope_bars, confirm=0):
+    """마감된 봉 종가 목록(오래된→최신)으로 교차·기울기를 계산한다. 데이터가 모자라면 None.
+    confirm=N이면 교차 후 N개 봉이 지나도 빠른 선이 같은 쪽에 머물렀을 때만 신호로 인정한다(가짜 교차 거르기, N=0은 교차 직후 바로)."""
+    if len(closes) < slow + slope_bars + confirm + 2: return None
+    def sd(end):      # end(음수 인덱스) 시점의 빠른선−느린선
+        c = closes[:len(closes) + end + 1] if end < -1 else closes
+        return sum(c[-fast:]) / fast - sum(c[-slow:]) / slow
+    sides = [sd(-1 - j) for j in range(confirm + 2)]          # [현재, 1봉 전, ...]
+    cur = sides[0]; prev = sides[confirm + 1]; mid = sides[1:confirm + 1]
+    cross = None
+    if prev <= 0 < cur and all(x > 0 for x in mid): cross = "up"
+    elif prev >= 0 > cur and all(x < 0 for x in mid): cross = "down"
     f1 = sum(closes[-fast:]) / fast; s1 = sum(closes[-slow:]) / slow
-    f0 = sum(closes[-fast - 1:-1]) / fast; s0 = sum(closes[-slow - 1:-1]) / slow
     s_old = sum(closes[-slow - slope_bars:-slope_bars]) / slow
-    cross = "up" if (f0 <= s0 and f1 > s1) else ("down" if (f0 >= s0 and f1 < s1) else None)
-    return dict(cross=cross, slope=s1 - s_old, fast=f1, slow=s1)
+    return dict(cross=cross, slope=s1 - s_old, fast=f1, slow=s1, slope_pct=(s1 - s_old) / s1 * 100)
 
 def stop_price(state):
     """한 줄 스톱: 롱은 max(진입가−손절, 최고가−트레일), 숏은 min(진입가+손절, 최저가+트레일)."""
@@ -66,6 +74,7 @@ def step(state, closed, price, order_fn, log, notify=None):
         gross = aq * ((fp - state["entry"]) if state["pos"] == "long" else (state["entry"] - fp)); net = gross - fee - state.get("entry_fee", 0.0)
         state["cum_pnl"] = state.get("cum_pnl", 0.0) + net; state["cum_fees"] = state.get("cum_fees", 0.0) + fee + state.get("entry_fee", 0.0)
         state["n_closed"] = state.get("n_closed", 0) + 1; state["n_wins"] = state.get("n_wins", 0) + (1 if net > 0 else 0)
+        state["sum_win"] = state.get("sum_win", 0.0) + (net if net > 0 else 0.0); state["sum_loss"] = state.get("sum_loss", 0.0) + (net if net <= 0 else 0.0)
         state["loss_streak"] = 0 if net > 0 else state.get("loss_streak", 0) + 1
         log(f"  {'🟢' if net > 0 else '🔴'} {'롱' if state['pos'] == 'long' else '숏'} 청산({reason}): {detail} | 진입 {state['entry']:,.6g} → 청산 {fp:,.6g}, 순손익 {net:+.2f} USDT (누적 {state['cum_pnl']:+.2f})")
         ev.append(("close", state["pos"], reason, net)); old = state["pos"]
@@ -94,18 +103,21 @@ def step(state, closed, price, order_fn, log, notify=None):
     if state.get("pos"):
         state["best"] = max(state["best"], price) if state["pos"] == "long" else min(state["best"], price)
         sp = stop_price(state); hit = (price <= sp) if state["pos"] == "long" else (price >= sp)
+        tp = CFG["tp_pct"]
         if hit: close_pos("손절·트레일링", price)
+        elif tp and ((state["pos"] == "long" and price >= state["entry"] * (1 + tp / 100)) or (state["pos"] == "short" and price <= state["entry"] * (1 - tp / 100))): close_pos("익절", price)
     # ② 새 봉 마감 시 교차 판단
     if last_ts > state["last_bar_ts"]:
         state["last_bar_ts"] = last_ts
-        sig = signal(closes, CFG["ma_fast"], CFG["ma_slow"], CFG["slope_bars"])
+        sig = signal(closes, CFG["ma_fast"], CFG["ma_slow"], CFG["slope_bars"], CFG["confirm_bars"])
         if sig is None:
             log("  😴 봉 데이터 부족 — 대기"); return ev
         cross = sig["cross"]; slope = sig["slope"]; d = CFG["direction"]; filt = CFG["slope_filter"]
         if cross: log(f"  📈 {'골든크로스' if cross == 'up' else '데드크로스'} — 빠른 {sig['fast']:,.6g} / 느린 {sig['slow']:,.6g}, 느린선 기울기 {slope:+.6g}")
         want = None
-        if cross == "up" and d in ("both", "long") and (not filt or slope > 0): want = "long"
-        if cross == "down" and d in ("both", "short") and (not filt or slope < 0): want = "short"
+        smin = CFG["slope_min_pct"]
+        if cross == "up" and d in ("both", "long") and (not filt or sig["slope_pct"] > smin): want = "long"
+        if cross == "down" and d in ("both", "short") and (not filt or sig["slope_pct"] < -smin): want = "short"
         pos = state.get("pos")
         if pos and cross and ((pos == "long" and cross == "down") or (pos == "short" and cross == "up")):
             close_pos("반대 교차", price)
@@ -132,7 +144,7 @@ def run_check(send=True):
     order_fn = lambda side, usdt, p, ro, qty: g.place_order(CFG["symbol"], side, usdt, p, reduce_only=ro, dry_run=not send, qty_override=qty)
     ev = step(state, closed, price, order_fn, print, notify=(lambda m: g.send_discord(m)) if (send and not CFG.get("paper")) else None)
     if not ev and "last_bar_ts" in state:
-        sig = signal([b[4] for b in closed], CFG["ma_fast"], CFG["ma_slow"], CFG["slope_bars"])
+        sig = signal([b[4] for b in closed], CFG["ma_fast"], CFG["ma_slow"], CFG["slope_bars"], CFG["confirm_bars"])
         pos = state.get("pos")
         txt = f"빠른 {sig['fast']:,.6g} / 느린 {sig['slow']:,.6g} / 기울기 {sig['slope']:+.6g}" if sig else "봉 데이터 부족"
         if pos: print(f"  보유: {'롱' if pos == 'long' else '숏'} {state['qty']:.4f}개 진입 {state['entry']:,.6g} 현재 {((price / state['entry'] - 1) * 100 * (1 if pos == 'long' else -1)):+.2f}% | 스톱선 {stop_price(state):,.6g} | {txt}")
