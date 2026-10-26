@@ -1,7 +1,7 @@
 {
   "name": "cap_long",
   "symbol": "CAP/USDT:USDT",
-  "설명": "CAP 롱 그리드(coin_grid_bot.py) 설정 (2026-10-26 수정). 기준가 = 직전 5분 평균가(매분 갱신, ref_mode=sma): 평균보다 -0.5% 낮으면 매수 100USDT, 평균보다 +1% 높으면 매도 200USDT, 한도 1000USDT(명목). 5분 -8% 급락 시 신규 매수 중단, 보유 후 고점 -10%에서 봇 물량 전량 청산하고 2시간 쉰 뒤 자동 재개. 급등 모드(1분 +3% 추격 매수·분할 매도)는 그림자·백테스트로 검증한 B5 전략에 없어서 끔(surge_mode=false). 그림자 모드는 B5·B10 가상 거래를 계속 기록. 계정 레버리지 5배(교차), 봇은 명목 기준 주문(leverage=1). ref_mode=last 로 되돌리면 마지막 체결가 방식. [2026-10-26 12:0x 주문 크기 2배: 매수 100/매도 200, 한도 1000 유지, 휴식 4시간→2시간]",
+  "설명": "CAP 롱 그리드(coin_grid_bot.py) 설정 (2026-10-26 수정). 기준가 = 직전 5분 평균가(매분 갱신, ref_mode=sma): 평균보다 -0.5% 낮으면 매수 100USDT, 평균보다 +1% 높으면 매도 200USDT, 한도 1000USDT(명목). 5분 -8% 급락 시 신규 매수 중단, 보유 후 고점 -10%에서 봇 물량 전량 청산하고 2시간 쉰 뒤 자동 재개. 급등 모드(1분 +3%면 추격 매수 200USDT, 급등 고점 −3/−4.5/−6%에서 3단계 분할 매도)는 2026-10-26 12:1x 사용자 요청으로 다시 켬(surge_mode=true) — 그림자·백테스트의 B5에는 없던 기능이라 검증은 별도. 그림자 모드는 B5·B10 가상 거래를 계속 기록. 계정 레버리지 5배(교차), 봇은 명목 기준 주문(leverage=1). ref_mode=last 로 되돌리면 마지막 체결가 방식. [2026-10-26 12:0x 주문 크기 2배: 매수 100/매도 200, 한도 1000 유지, 휴식 4시간→2시간]",
   "cfg": {
     "step_pct": 0.5,
     "sell_step_pct": 1.0,
@@ -9,7 +9,7 @@
     "sell_order_usdt": 200,
     "max_total_usdt": 1000,
     "leverage": 1,
-    "surge_chase_usdt": 100,
+    "surge_chase_usdt": 200,
     "trail_exit_pct": 10.0,
     "trail_action": "liquidate",
     "trail_rest_min": 120,
@@ -20,6 +20,6 @@
     "shadow_slip": 0.0028,
     "ref_mode": "sma",
     "ref_sma_min": 5,
-    "surge_mode": false
+    "surge_mode": true
   }
 }
