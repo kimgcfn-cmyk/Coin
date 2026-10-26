@@ -1,0 +1,23 @@
+{
+  "name": "ma_cap_paper",
+  "symbol": "CAP/USDT:USDT",
+  "설명": "CAP 이동평균 교차 — 제안안(15분봉 5/20, 기울기 필터, 롱+숏, 손절·트레일링 3%, 100USDT/건, 한도 300) 모의. 재생 모의(16종목 120h, 슬리피지 0.10%): 합계 +13.4 USDT이지만 ORDER 1종목을 빼면 −45.3, 승률 29%, 이익 종목 5/16 — 3% 스톱이 15분봉 변동보다 좁아 자주 걸림. 실제 주문 없음(paper). 가동 전 확인: coin_ma_bot.py 맨 위 설명.",
+  "cfg": {
+    "paper": true,
+    "paper_slip": 0.0028,
+    "leverage": 1,
+    "order_usdt": 100,
+    "max_total_usdt": 300,
+    "timeframe": "15m",
+    "slope_filter": true,
+    "slope_bars": 3,
+    "direction": "both",
+    "cooldown_bars": 2,
+    "loss_streak_pause": 3,
+    "streak_pause_bars": 8,
+    "ma_fast": 5,
+    "ma_slow": 20,
+    "stop_pct": 3.0,
+    "trail_pct": 3.0
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "ma_aria_paper",
+  "symbol": "ARIA/USDT:USDT",
+  "설명": "ARIA 이동평균 교차 — 제안안(15분봉 5/20, 손절·트레일링 3%) 모의. 실제 주문 없음(paper). 가동 전 확인: coin_ma_bot.py 맨 위 설명.",
+  "cfg": {
+    "paper": true,
+    "paper_slip": 0.0028,
+    "leverage": 1,
+    "order_usdt": 100,
+    "max_total_usdt": 300,
+    "timeframe": "15m",
+    "slope_filter": true,
+    "slope_bars": 3,
+    "direction": "both",
+    "cooldown_bars": 2,
+    "loss_streak_pause": 3,
+    "streak_pause_bars": 8,
+    "ma_fast": 5,
+    "ma_slow": 20,
+    "stop_pct": 3.0,
+    "trail_pct": 3.0
+  }
+}
