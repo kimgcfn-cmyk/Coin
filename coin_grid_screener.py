@@ -120,6 +120,43 @@ def send_picks(text: str) -> bool:
         print("  (DISCORD_WEBHOOK_URL_PICKS 없음 — 기존 채널로 보냅니다)")
     return g.send_discord(text)
 
+STATE_FILE = "coin_screener_state.json"
+STREAK_GAP_MIN = 25     # 직전 점검이 이 분보다 오래됐으면(점검을 건너뛰었으면) 연속 추천으로 보지 않는다
+
+def update_streak(symbols, now=None, path=STATE_FILE):
+    """이번에 추천하는 종목마다 '연속 몇 번째 추천인지'를 센다. 직전 점검에도 있었고 점검 간격이 STREAK_GAP_MIN분 이내면 +1, 아니면 1(신규).
+    추천에서 빠진 종목은 기록에서 지운다(다시 나오면 신규). 반환: {심볼: (횟수, 최초 추천 시각 datetime[UTC])}"""
+    import os, datetime as dt
+    now = now or dt.datetime.now(dt.timezone.utc)
+    try:
+        st = json.load(open(path, encoding="utf-8"))
+    except Exception:
+        st = {}
+    prev = st.get("symbols", {}); last_run = st.get("last_run")
+    fresh = False
+    if last_run:
+        try: fresh = (now - dt.datetime.fromisoformat(last_run)).total_seconds() <= STREAK_GAP_MIN * 60
+        except Exception: fresh = False
+    out = {}; new_state = {}
+    for sym in symbols:
+        p = prev.get(sym) if fresh else None
+        cnt = (p["count"] + 1) if p else 1
+        first = dt.datetime.fromisoformat(p["first"]) if p else now
+        out[sym] = (cnt, first); new_state[sym] = {"count": cnt, "first": first.isoformat()}
+    tmp = path + ".tmp"
+    json.dump({"last_run": now.isoformat(), "symbols": new_state}, open(tmp, "w", encoding="utf-8"), ensure_ascii=False)
+    os.replace(tmp, path)
+    return out
+
+def streak_label(cnt, first, now=None):
+    """'🆕 신규' 또는 '🔁 N번째 추천 (최초 HH:MM KST, M분째)'"""
+    import datetime as dt
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if cnt <= 1: return "🆕 신규"
+    kst = dt.timezone(dt.timedelta(hours=9))
+    mins = int((now - first).total_seconds() // 60)
+    return f"🔁 {cnt}번째 추천 (최초 {first.astimezone(kst).strftime('%H:%M')} KST, {mins}분째)"
+
 def main():
     a = sys.argv[1:]
     def val(f, d=None): return a[a.index(f) + 1] if f in a and a.index(f) + 1 < len(a) else d
@@ -169,11 +206,18 @@ def main():
         except Exception as e:
             print("모의 실행 실패:", e)
     if notify and not ok:
+        update_streak([])        # 후보가 없으면 연속 기록을 비운다
         print("\n통과한 종목이 없어 디스코드 알림은 보내지 않음")
     elif notify:
-        import coin_grid_bot as g
-        lines = [f"{o['symbol']} 점수 {o['score']:.0f} · {o['kind']} · 10h 고저폭 {o['rng']:.0f}% · 고점대비 {o['from_high']:+.0f}% · 24h {o['vol24']/1e6:.0f}M · 1h {o['hour_vol']/1e3:.0f}K · 호가 {o.get('depth', 0):,.0f}" + (" ⚠️" if o["warn"] else "") for o in ok[:top]]
-        send_picks("🔎 <b>그리드 전략 후보 종목</b> (최근 10시간 기준)\n" + ("\n".join(lines) if lines else "통과한 종목 없음") + "\n※ 고저폭 12%+ · 하락 추세 아님 · 거래대금 10M+ · 최근 1시간 30만+ · 호가 깊이 1천+ 기준. 수익 보장 아님.")
+        import datetime as dt
+        shown = ok[:top]
+        now_utc = dt.datetime.now(dt.timezone.utc)
+        streak = update_streak([o["symbol"] for o in shown], now_utc)
+        lines = [f"{o['symbol']} 점수 {o['score']:.0f} · {o['kind']} · 10h 고저폭 {o['rng']:.0f}% · 고점대비 {o['from_high']:+.0f}% · 24h {o['vol24']/1e6:.0f}M · 1h {o['hour_vol']/1e3:.0f}K · 호가 {o.get('depth', 0):,.0f}"
+                 + (" ⚠️" if o["warn"] else "") + f" · {streak_label(*streak[o['symbol']], now=now_utc)}" for o in shown]
+        n_rep = sum(1 for c, _ in streak.values() if c > 1)
+        head = "🔎 <b>그리드 전략 후보 종목</b> (최근 10시간 기준, 10분마다 점검)" + (f"\n🔁 직전에도 추천한 종목 {n_rep}개 / 🆕 신규 {len(streak) - n_rep}개" if shown else "")
+        send_picks(head + "\n" + ("\n".join(lines) if lines else "통과한 종목 없음") + "\n※ 고저폭 12%+ · 하락 추세 아님 · 거래대금 10M+ · 최근 1시간 30만+ · 호가 깊이 1천+ 기준. 수익 보장 아님.")
         print("\n디스코드 알림 전송 완료")
 
 if __name__ == "__main__":
