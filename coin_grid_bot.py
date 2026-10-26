@@ -252,12 +252,18 @@ def fetch_price(symbol: str) -> float:
     ex = get_exchange()
     if not ex:
         return 0.0
-    try:
-        ticker = ex.fetch_ticker(symbol)
-        return float(ticker.get("last") or 0)
-    except Exception as e:
-        print(f"  시세 조회 오류: {e}")
-        return 0.0
+    for attempt in range(4):                 # 429(요청 과다) 등 일시 오류는 잠깐 쉬고 다시 시도 (2026-10-26: 봇이 늘어 같은 초에 요청이 몰림)
+        try:
+            ticker = ex.fetch_ticker(symbol)
+            return float(ticker.get("last") or 0)
+        except Exception as e:
+            transient = ("429" in str(e) or "Too Many" in str(e) or "timed out" in str(e).lower() or "Timeout" in type(e).__name__)
+            if transient and attempt < 3:
+                time.sleep(1.0 + attempt + (hash(symbol) % 5) * 0.2)
+                continue
+            print(f"  시세 조회 오류: {e}")
+            return 0.0
+    return 0.0
 
 def place_order(symbol: str, side: str, margin_usdt: float, price: float,
                  reduce_only: bool = False, dry_run: bool = False,
