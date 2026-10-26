@@ -18,8 +18,6 @@ KST = dt.timezone(dt.timedelta(hours=9))
 FEE = 0.0004
 # (표시 이름, 방향, 심볼, 로그 이름, 상태 파일, 모의 여부, 로그에 없는 체결(수동 청산·편입))
 BOTS = [
-    ("ORDER 숏", "short", "ORDERUSDT", "coin_grid_short_order", "coin_grid_short_order_state.json", False,
-     [dict(t="2026-10-26 10:05", label="수동 숏 편입 진입", amt=95.1786, qty=2230.0)]),
     ("CAP 롱", "long", "CAPUSDT", "coin_grid_cap", "coin_grid_cap_state.json", False,
      [dict(t="2026-10-26 12:52", label="수동 청산 매도", amt=916.1848, qty=8801.0),
       dict(t="2026-10-26 13:10", label="수동 롱 편입 매수", amt=491.4816, qty=4400.0)]),
