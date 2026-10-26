@@ -23,7 +23,8 @@ BOTS = [
     ("T 숏", "short", "TUSDT", "coin_grid_short_t", "coin_grid_short_t_state.json", False,
      [dict(t="2026-10-25 22:47", label="수동 청산 환매", amt=251.8573, qty=45160.0)]),
     ("CAP 롱", "long", "CAPUSDT", "coin_grid_cap", "coin_grid_cap_state.json", False,
-     [dict(t="2026-10-26 12:52", label="수동 청산 매도", amt=916.1848, qty=8801.0)]),
+     [dict(t="2026-10-26 12:52", label="수동 청산 매도", amt=916.1848, qty=8801.0),
+      dict(t="2026-10-26 13:10", label="수동 롱 편입 매수", amt=491.4816, qty=4400.0)]),
     ("IRYS 롱(모의)", "long", "IRYSUSDT", "coin_grid_irys", "coin_grid_irys_state.json", True, []),
     ("IRYS 숏(모의)", "short", "IRYSUSDT", "coin_grid_short_irys", "coin_grid_short_irys_state.json", True, []),
 ]
