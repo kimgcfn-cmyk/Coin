@@ -1,0 +1,24 @@
+{
+  "name": "q_short_paper",
+  "symbol": "Q/USDT:USDT",
+  "설명": "Q 숏 그리드 — 모의(paper) 프리셋 (2026-10-27 사용자 요청으로 생성·가동). Q 롱(q_long_paper)과 같은 조건: 기준가 = 직전 5분 평균가(ref_mode=sma), 평균보다 +1% 높으면 숏 50USDT, −2% 낮으면 100USDT 환매(평균 진입가 이하에서만), 한도 300USDT, 평균 진입가 +15% 강제 손절, 급락 모드 추격 100USDT. **진입 간격 규칙 없음**(entry_spacing=false: 기준가 +간격 위에 있으면 매 점검 진입, 한도까지). 12시간 변화율 필터는 쓰지 않음. ⚠️ Q는 24h +236% 급등 직후, 스프레드 0.28%, 숏은 모의상 급등 구간에서 손실. 실제 주문 없음(paper).",
+  "cfg": {
+    "step_pct": 1.0,
+    "sell_step_pct": 2.0,
+    "order_usdt": 50,
+    "sell_order_usdt": 100,
+    "max_total_usdt": 300,
+    "leverage": 1,
+    "short_stop_pct": 15.0,
+    "surge_chase_usdt": 100,
+    "surge_mode": true,
+    "ref_mode": "sma",
+    "ref_sma_min": 5,
+    "entry_spacing": false,
+    "cover_min_profit_pct": 0.01,
+    "trend_filter": false,
+    "trend_up_block": false,
+    "paper": true,
+    "paper_slip": 0.0028
+  }
+}
