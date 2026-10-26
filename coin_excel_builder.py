@@ -16,6 +16,7 @@ from openpyxl.utils import get_column_letter as L
 
 AR = "Arial"
 f_norm = Font(name=AR, size=10); f_bold = Font(name=AR, size=10, bold=True)
+f_green = Font(name=AR, size=10, color="2E7D32")
 f_in = Font(name=AR, size=10, color="0000FF"); f_head = Font(name=AR, size=10, bold=True, color="FFFFFF")
 f_title = Font(name=AR, size=14, bold=True); f_note = Font(name=AR, size=9, italic=True, color="595959")
 fill_head = PatternFill("solid", fgColor="1F3864"); fill_key = PatternFill("solid", fgColor="FFFF00")
@@ -181,7 +182,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
         t.cell(x, 25, f'={gd}N(Y{p})+I{x})')
         t.cell(x, 26, f'={gd}ROUND((DATEVALUE(LEFT($B{x},10))+TIMEVALUE(MID($B{x},12,5))-DATEVALUE(LEFT($B${first},10))-TIMEVALUE(MID($B${first},12,5)))*24,4))')
         for j in range(1, 27):
-            c = t.cell(x, j); c.font = f_in if j in (2, 3, 4, 5, 6, 10) else f_norm; c.border = box
+            c = t.cell(x, j); c.font = f_in if j in (2, 3, 4, 5, 6, 10) else (f_green if j == 22 else f_norm); c.border = box
             if d and d["label"] and not isE(d["label"]) and not short and False: pass
             if d and not (isE(d["label"])): c.fill = fill_cover
             if j in (1, 3, 4): c.alignment = Alignment(horizontal="center")
