@@ -87,7 +87,7 @@ def add_strategy_sheet(wb, name, short, st):
     ws.sheet_view.showGridLines = False
     return ws
 
-def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_notes, spare=0, rate=0.0004, strategy=None):
+def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_notes, spare=0, rate=0.0004, strategy=None, extra=None):
     short = mode == "short"
     ENT, EXT = ("숏 진입", "환매") if short else ("매수", "매도")
     isE = (lambda lab: ("진입" in lab or "추격" in lab)) if short else (lambda lab: "매수" in lab)
@@ -233,8 +233,61 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
                     tk = Tokenizer(c.value)
                     if c.value.count("(") != c.value.count(")"): bad += 1; print("괄호 불일치:", ws.title, c.coordinate, c.value)
     if strategy: add_strategy_sheet(wb, name, short, strategy)
+    if extra: extra(wb)
     wb.calculation.fullCalcOnLoad = True
     wb.save(path); return dict(first=first, last=last, bad=bad)
 
 def side_rows(rows, short):
     return rows
+
+def add_shadow_sheet(wb, sh, state, price):
+    """CAP 그림자 비교 시트 — 실거래(A, 마지막 체결가 기준)와 가상 B5·B10(평균가 기준)을 같은 기간으로 비교. 값은 내보낼 때 계산한 숫자다."""
+    import datetime as dt
+    ws = wb.create_sheet("그림자 비교", 1)
+    ws["A1"] = "그림자 비교 — 실거래(A) 대 평균가 기준 가상 거래(B5·B10)"; ws["A1"].font = f_title
+    if not sh or not sh.get("modes"):
+        ws["A3"] = "아직 그림자 모드 기록이 없습니다. 봇이 가동되어 가상 거래가 쌓이면 자동으로 채워집니다."; ws["A3"].font = f_note
+        return ws
+    kst = dt.timezone(dt.timedelta(hours=9))
+    start = dt.datetime.fromtimestamp(sh["start"], kst).strftime("%Y-%m-%d %H:%M")
+    px = price or sh["hist"][-1][1]
+    slip, fee = 0.0028, 0.0004
+    ws["A2"] = f"비교 시작 {start} KST부터. 가상 거래는 수수료 0.04%·슬리피지 0.28%를 반영하고 주문은 내지 않습니다. 트레일 청산(−10%, 4시간 휴식)·급락 대응은 모두 같은 조건입니다."; ws["A2"].font = f_note
+    heads = ["구분", "기준가 방식", "순손익 (USDT)", "실현손익 (USDT)", "미실현 평가 (USDT)", "매수 횟수", "매도 횟수", "트레일 청산", "최대 낙폭 (USDT)", "현재 보유 (USDT)"]
+    for j, h in enumerate(heads, 1):
+        c = ws.cell(4, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
+    ws.row_dimensions[4].height = 30
+    live0 = sh.get("live0", {})
+    cum = (state.get("cum_pnl") or 0.0) - (live0.get("cum_pnl") or 0.0)
+    q, avg = state.get("qty", 0.0), state.get("avg_cost") or 0.0
+    unreal = q * (px - avg) if q > 0 and avg else 0.0
+    unreal0 = (live0.get("qty") or 0.0) * (live0.get("price", px) - (live0.get("avg_cost") or 0.0)) if live0.get("qty") else 0.0
+    rows = [("A (실거래)", "마지막 체결가", cum + unreal - unreal0, cum, unreal - unreal0, None, None, None, None, q * px)]
+    for key in sorted(sh["modes"], key=int):
+        m = sh["modes"][key]
+        eq = m["cash"] + m["qty"] * px * (1 - slip) * (1 - fee)
+        rows.append((f"B{key} (가상)", f"직전 {key}분 평균가", eq, m["realized"], eq - m["realized"], m["buys"], m["sells"], m["trails"], m["mdd"], m["qty"] * px))
+    for i, r in enumerate(rows):
+        for j, v in enumerate(r, 1):
+            c = ws.cell(5 + i, j, v); c.font = f_bold if j in (1, 3) else f_norm; c.border = box
+            if j >= 3: c.number_format = "#,##0.00;[Red]-#,##0.00;-" if j not in (6, 7, 8) else "0"
+    note_r = 5 + len(rows) + 1
+    ws.cell(note_r, 1, "· A의 순손익은 같은 기간의 봇 상태 파일 누적 실현(수수료 포함)과 보유 평가손익 변화로 계산했습니다. 비교 시작 시점에 보유가 있었다면 그 평가분은 제외했습니다.").font = f_note
+    ws.cell(note_r + 1, 1, "· 가상 거래는 1분 단위 점검 시세로 체결했다고 가정한 모의이며 실제 체결과 차이가 있습니다. 과거 결과일 뿐 투자 조언이 아닙니다.").font = f_note
+    er = note_r + 3
+    ws.cell(er, 1, "최근 가상 거래 (최대 30건, UTC 표기 시각은 한국시간으로 바꿔 표시)").font = f_bold
+    for j, h in enumerate(["일시(KST)", "모드", "구분", "가격", "금액(USDT)", "수량", "손익(USDT)"], 1):
+        c = ws.cell(er + 1, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
+    for i, e in enumerate(sh.get("events", [])[-30:]):
+        t_ = e[0]
+        try: t_ = (dt.datetime.strptime(t_.replace(" UTC", ""), "%Y-%m-%d %H:%M") + dt.timedelta(hours=9)).strftime("%Y-%m-%d %H:%M")
+        except Exception: pass
+        vals = [t_, "B" + str(e[1]), e[2], e[3], e[4], e[5], e[6]]
+        for j, v in enumerate(vals, 1):
+            c = ws.cell(er + 2 + i, j, v); c.font = f_norm; c.border = box
+            if j == 4: c.number_format = "0.000000"
+            if j in (5, 7): c.number_format = "#,##0.00;[Red]-#,##0.00;-"
+            if j == 6: c.number_format = "#,##0.0"
+    for j, w in enumerate([22, 20, 16, 16, 18, 10, 10, 12, 16, 16], 1): ws.column_dimensions[L(j)].width = w
+    ws.sheet_view.showGridLines = False
+    return ws
