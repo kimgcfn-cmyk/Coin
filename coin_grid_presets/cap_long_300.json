@@ -17,7 +17,10 @@
     "ref_sma_min": 5,
     "surge_mode": true,
     "entry_spacing": true,
-    "sell_min_profit_pct": 0
+    "sell_min_profit_pct": 0,
+    "trend_filter": true,
+    "trend_pct": 5.0,
+    "trend_release_pct": 2.5
   },
   "전략유형": "양방향(롱숏 동시) — coin_grid_pair_strategy.md 참고"
 }

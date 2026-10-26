@@ -123,6 +123,11 @@ CFG = {
     "surge_vol_lookback_min": 100,
     "stop_loss"       : False,             # 2026-10-23 끔 — 고점 청산으로 대체 (켜면 단계 손절+숏 모드 동작, 아래 설명)
     "stop_loss_frac"  : 0.10,              # 손절 시작 시점 보유 수량의 10%씩 (매번 같은 수량)
+    "trend_filter"    : False,             # 12시간 추세 필터(하락 쪽만, 2026-10-26): 켜면 12시간 변화율이 -trend_pct% 이하일 때 롱은 신규 매수·급등 추격 매수를 멈추고, 숏은 trend_hedge_usdt까지 시장가로 채워 들고 간다(그리드 환매 중지)
+    "trend_pct"       : 5.0,               # 하락 추세 진입 기준(12시간 변화율 -5% 이하)
+    "trend_release_pct": 2.5,              # 해제 기준: 12시간 변화율이 -2.5% 위로 올라오면 정상 그리드 복귀(히스테리시스)
+    "trend_lookback_h": 12,
+    "trend_hedge_usdt": 0.0,               # (숏 봇) 하락 추세에서 채울 숏 목표 규모(명목 USDT). 0이면 환매 중지 없이 필터만 표시
     "auto_trade"      : False,             # 기본은 모의(paper). 실전은 --live 로 켠다
     "state_file"      : "",
 }
@@ -411,6 +416,39 @@ def _pnl_footer(state: dict, price: float) -> str:
 # ══════════════════════════════════════════════════════
 #  그리드 로직
 # ══════════════════════════════════════════════════════
+def update_trend(state: dict, price: float, now_ts: float, send: bool = True) -> int:
+    """12시간 추세 필터 상태를 갱신하고 flag를 돌려준다: -1=하락 추세 중, 0=보통. (trend_filter가 꺼져 있으면 항상 0)
+    12시간 전 가격은 15분봉으로 5분에 한 번만 조회해 state에 캐시한다. 조회 실패 시 직전 값을 그대로 쓴다(없으면 필터 해제).
+    진입 -trend_pct% 이하, 해제 -trend_release_pct% 초과(히스테리시스). 백테스트(2026-10-26): CAP·14개 코인 하락 추세 26구간에서 합계 -319 → -23 USDT."""
+    if not CFG.get("trend_filter"):
+        return 0
+    try:
+        if now_ts - state.get("trend_t", 0) >= 300:
+            ex = get_exchange()
+            rows = ex.fetch_ohlcv(CFG["symbol"], "15m", limit=80) if ex else []
+            tgt = (now_ts - CFG.get("trend_lookback_h", 12) * 3600) * 1000
+            if rows and rows[0][0] <= tgt + 15 * 60 * 1000:
+                c = min(rows, key=lambda r: abs(r[0] - tgt))
+                state["trend_ref"] = float(c[1]); state["trend_t"] = now_ts
+    except Exception as e:
+        print(f"  (추세 조회 오류 무시: {type(e).__name__}: {e})")
+    ref = state.get("trend_ref")
+    if not ref or now_ts - state.get("trend_t", 0) > 3600:      # 값이 없거나 1시간 넘게 갱신 실패면 필터 끔
+        state["trend_flag"] = 0; state.pop("trend_T", None)
+        return 0
+    T = (price / ref - 1) * 100; state["trend_T"] = round(T, 2)
+    flag = state.get("trend_flag", 0)
+    if flag == 0 and T <= -CFG.get("trend_pct", 5.0):
+        flag = -1; msg = f"📉 <b>{CFG['symbol']} 12시간 하락 추세 필터 켜짐</b> ({T:+.1f}%)\n롱: 신규 매수 중단 / 숏: 숏을 들고 가며 그리드 환매 중지"
+        print(f"  📉 12시간 변화 {T:+.1f}% — 하락 추세 필터 켜짐")
+        if send: send_discord(msg)
+    elif flag == -1 and T > -CFG.get("trend_release_pct", 2.5):
+        flag = 0; msg = f"▶️ <b>{CFG['symbol']} 12시간 하락 추세 필터 해제</b> ({T:+.1f}%)\n정상 그리드로 복귀합니다"
+        print(f"  ▶️ 12시간 변화 {T:+.1f}% — 하락 추세 필터 해제")
+        if send: send_discord(msg)
+    state["trend_flag"] = flag
+    return flag
+
 def check_grid(state: dict, price: float) -> dict:
     """
     현재가를 기준가와 비교해 매수/매도 신호 판단.
@@ -427,6 +465,8 @@ def check_grid(state: dict, price: float) -> dict:
     if price <= drop_trigger:
         if state.get("crash_on"):
             return {"action": None, "reason": f"급락 대응 — 신규 매수 중단 중 (저점 {state.get('crash_low', 0):,.4f}, 반등 시 재개)"}
+        if state.get("trend_flag") == -1:
+            return {"action": None, "reason": f"12시간 하락 추세({state.get('trend_T', 0):+.1f}%) — 신규 매수 중단 (보유분 매도 감시는 계속)"}
         if state.get("buy_paused"):
             return {"action": None, "reason": f"신규 매수 중단 중({state.get('buy_paused_reason', '')}) — 보유분만 매도 감시 (기준가 {ref:,.4f}, 매도트리거 {rise_trigger:,.4f})"}
         le = state.get("last_entry_price")
@@ -523,7 +563,7 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
             print(f"  🚀 급등 감지 — {CFG['surge_window_min']}분 저점 {lo:,.4f} → {price:,.4f} (+{(price/lo-1)*100:.1f}%), {vtxt}")
             held0 = state.get("qty", 0.0)
             chase_note = ""
-            cu = CFG.get("surge_chase_usdt", 0.0)
+            cu = 0.0 if state.get("trend_flag") == -1 else CFG.get("surge_chase_usdt", 0.0)   # 12시간 하락 추세에서는 추격 매수 안 함
             if cu > 0:
                 if state.get("holdings_usdt", 0.0) + cu > CFG["max_total_usdt"]:
                     chase_note = f"\n추격 매수는 한도({CFG['max_total_usdt']:.0f} USDT) 때문에 건너뜁니다."
@@ -754,6 +794,7 @@ def run_check(send: bool = True):
     print(f"  현재가: {price:,.4f} USDT")
 
     _record_ref_hist(state, price, time.time())
+    update_trend(state, price, time.time(), send)
 
     if send and CFG.get("shadow_modes"):
         try:

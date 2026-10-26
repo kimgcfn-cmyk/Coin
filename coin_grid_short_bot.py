@@ -113,6 +113,29 @@ def run_check(send=True):
         if send: g.save_state(state)
         return
 
+    # ①-b 12시간 하락 추세 필터(2026-10-26): 하락 추세면 숏을 trend_hedge_usdt까지 시장가로 채우고 그리드 환매·급락 모드를 쉬며 들고 간다
+    if CFG.get("trend_filter"):
+        g.update_trend(state, price, t, send)
+        if state.get("trend_flag") == -1 and CFG.get("trend_hedge_usdt", 0) > 0:
+            tgt = min(CFG["trend_hedge_usdt"], CFG["max_total_usdt"]); hold = state.get("holdings_usdt", 0.0); msg = None
+            u = min(100.0, tgt - hold)
+            if u >= 6 and not state.get("rally_on"):
+                ok, detail, q, info = _short_order(price, u, send)
+                if ok:
+                    aq = info.get("filled_qty", q); _open(state, aq, info.get("avg_price", price), info.get("fee"))
+                    state["qty"] = state.get("qty", 0.0) + aq; state["holdings_usdt"] = hold + u; state["last_entry_price"] = price
+                    print(f"  🔻 하락 추세 숏 보강: {detail}")
+                    msg = _msg(state, f"🔻 <b>{CFG['symbol']} 하락 추세 숏 보강</b> (12시간 {state.get('trend_T', 0):+.1f}%)\n💰 금액: {info.get('cost', 0):,.2f} USDT\n💵 체결가: {info.get('avg_price', price):,.6g}\n📦 수량: {aq:.6f}개\n목표 규모 {tgt:.0f} USDT까지 채웁니다", price)
+                else:
+                    print(f"  ❌ 하락 추세 숏 보강 실패: {detail}")
+                    if not ("40762" in detail or "exceeds the balance" in detail): msg = f"❌ <b>{CFG['symbol']} 하락 추세 숏 보강 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"
+            else:
+                print(f"  📉 12시간 하락 추세({state.get('trend_T', 0):+.1f}%) — 숏 {hold:.0f}/{tgt:.0f} USDT 보유, 그리드 환매 중지하고 들고 감")
+            if send:
+                g.save_state(state)
+                _send(msg, send)
+            return
+
     # ② 급락 모드(추격 숏 + 반등 사다리 환매)
     ladder = CFG.get("surge_ladder") or [CFG["surge_trail_pct"]]
     if CFG.get("surge_mode"):
