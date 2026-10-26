@@ -229,11 +229,11 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
      ("미실현 순손익 수수료 후 (USDT)", "=B20-B21-B22", "0.0000;[Red]-0.0000"),          # 23
      ("총 순손익 (실현+미실현, USDT)", "=B10+B23", "0.0000;[Red]-0.0000"),               # 24
      ("총 수익률 (기준 자본 대비)", "=B24/B12", "0.00%;[Red]-0.00%"),                    # 25
-     ("── 단타 점검 (10~24시간 기준) ──", None, None),                                   # 26
+     ("── 단타 점검 (12~24시간 기준) ──", None, None),                                   # 26
      ("점검 시각까지 경과 (시간, 첫 체결부터)", elapsed_now, "0.0"),                      # 27
-     ("최근 10시간 실현 순손익 (USDT)", f'=SUMIFS({rg("R")},{rg("Z")},">"&(B27-10))', "0.0000;[Red]-0.0000;-"),      # 28
-     ("최근 10시간 체결 횟수", f'=COUNTIFS({rg("Z")},">"&(B27-10))', "0"),                                              # 29
-     ("최근 10시간 수익률 (기준 자본 대비)", "=B28/B12", "0.00%;[Red]-0.00%;-"),                                       # 30
+     ("최근 12시간 실현 순손익 (USDT)", f'=SUMIFS({rg("R")},{rg("Z")},">"&(B27-12))', "0.0000;[Red]-0.0000;-"),      # 28
+     ("최근 12시간 체결 횟수", f'=COUNTIFS({rg("Z")},">"&(B27-12))', "0"),                                              # 29
+     ("최근 12시간 수익률 (기준 자본 대비)", "=B28/B12", "0.00%;[Red]-0.00%;-"),                                       # 30
      ("최근 24시간 실현 순손익 (USDT)", f'=SUMIFS({rg("R")},{rg("Z")},">"&(B27-24))', "0.0000;[Red]-0.0000;-"),      # 31
      ("최근 24시간 체결 횟수", f'=COUNTIFS({rg("Z")},">"&(B27-24))', "0"),                                              # 32
      ("최근 24시간 수익률 (기준 자본 대비)", "=B31/B12", "0.00%;[Red]-0.00%;-"),                                       # 33
@@ -249,7 +249,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
         if fml is None: s.cell(r, 1).fill = PatternFill("solid", fgColor="D9E2F3"); c.fill = PatternFill("solid", fgColor="D9E2F3")
         s.cell(r, 1).border = box; c.border = box
     s.column_dimensions["A"].width = 40; s.column_dimensions["B"].width = 18
-    s["A36"] = "※ 10·24시간 항목은 점검(파일 갱신) 시각 기준으로 직전 N시간에 체결된 환매·매도의 순손익입니다. 보유 중인 물량의 평가손익은 포함하지 않습니다."; s["A36"].font = f_note
+    s["A36"] = "※ 12·24시간 항목은 점검(파일 갱신) 시각 기준으로 직전 N시간에 체결된 환매·매도의 순손익입니다. 보유 중인 물량의 평가손익은 포함하지 않습니다."; s["A36"].font = f_note
     s["A35"] = "※ 수수료 비중 = 총 수수료 ÷ 수수료 전 실현손익. 미실현은 현재가(설명·가정 시트 B11) 기준 추정입니다."; s["A35"].font = f_note
     last_filled = first + len(fills) - 1 if fills else first
     ch = ScatterChart(); ch.title = "누적 순손익 (수수료 후, USDT)"; ch.style = 2
