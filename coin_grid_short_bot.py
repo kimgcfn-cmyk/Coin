@@ -132,12 +132,16 @@ def run_check(send=True):
             if low < state["tr_trough"]: state["tr_n"] = 0                  # 새 저점이 나오면 연속 확인 횟수는 처음부터
             state["tr_trough"] = low
             k = state.get("tr_k", 0); qty_now = state.get("qty", 0.0); floor = state.get("tr_rehedge_below")
+            if qty_now <= 1e-9 and (k > 0 or state.get("tr_base")):          # 숏이 0이 됐는데(수동 청산·장부 정정 등) 사다리 진행 기록이 남아 있으면 지운다
+                if floor is None: floor = state["tr_rehedge_below"] = low
+                k = 0; state["tr_k"] = 0; state["tr_n"] = 0; state.pop("tr_base", None)
             tgt = min(CFG.get("trend_hedge_usdt", 0.0), CFG["max_total_usdt"]); hold = state.get("holdings_usdt", 0.0)
             if k == 0 and tgt > 0 and (floor is None or price < floor) and min(100.0, tgt - hold) >= 6 and not state.get("rally_on"):
                 u = min(100.0, tgt - hold)                                  # 하락 추세 보강: 목표 규모까지 시장가로 채운다(사다리 진행 중에는 채우지 않음)
                 ok, detail, q, info = _short_order(price, u, send)
                 if ok:
                     aq = info.get("filled_qty", q); _open(state, aq, info.get("avg_price", price), info.get("fee"))
+                    if qty_now <= 1e-9: state["tr_trough"] = price; state["tr_n"] = 0      # 빈 상태에서 새로 보강하면 사다리 저점 기준도 지금 가격으로 새로 잡는다
                     state["qty"] = state.get("qty", 0.0) + aq; state["holdings_usdt"] = hold + u; state["last_entry_price"] = price
                     print(f"  🔻 하락 추세 숏 보강: {detail}")
                     msg = _msg(state, f"🔻 <b>{CFG['symbol']} 하락 추세 숏 보강</b> (12시간 {state.get('trend_T', 0):+.1f}%)\n💰 금액: {info.get('cost', 0):,.2f} USDT\n💵 체결가: {info.get('avg_price', price):,.6g}\n📦 수량: {aq:.6f}개\n목표 규모 {tgt:.0f} USDT까지 채웁니다", price)
