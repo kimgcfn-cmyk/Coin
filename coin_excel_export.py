@@ -190,6 +190,7 @@ def main():
     os.makedirs(out, exist_ok=True)
     sec = split_sections(fetch_remote())
     now = dt.datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    b.NOW_KST = now
     res = {}
     for key, (name, sym) in BOTS.items():
         fills = parse_fills(sec.get(("LOG", name), [])) + EXTRA.get(key, [])
