@@ -123,7 +123,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     a["A13"] = "열 설명"; a["A13"].font = f_bold
     pnl_def = "= 환매수량 × (평균 진입가 − 환매가). 숏이라 가격이 내리면 이익" if short else "= 매도수량 × (매도가 − 평균 매수가). 롱이라 가격이 오르면 이익"
     defs = [("체결가", "= 체결금액 ÷ 체결수량 (로그의 체결가는 소수 2자리로 잘려 있어서 금액÷수량으로 계산)"),
-            ("보유금액", "= 보유수량(거래 후) × 체결가. 거래 직후 보유 물량을 그 체결가로 평가한 명목금액(USDT)"),
+            ("보유금액", "두 열입니다. ① 레버리지 반영(명목) = 보유수량(거래 후) × 체결가 — 거래 직후 보유 물량의 포지션 크기. ② 레버리지 미반영(증거금) = ①을 레버리지(5배)로 나눈 값 — 거래소 화면에 투입금으로 보이는 금액. 과거에 레버리지가 달랐던 구간도 현재 설정(5배)으로 나눈 값입니다."),
             ("거래수수료", "= 체결금액 × 수수료율. 진입·청산 모두 부과"),
             ("펀딩비", "거래소가 정산하는 펀딩비. 봇이 기록하지 않아 0으로 둠 — 알면 입력(받으면 +, 내면 −)"),
             ("평균 " + ("진입가" if short else "매수가"), "이동평균법. 진입 시 (기존수량×기존평균 + 체결금액) ÷ 새 수량, 청산은 평균가 그대로, 물량 0이면 초기화"),
@@ -142,7 +142,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     t["A2"] = f"행 1건 = 체결 1건. {EXT} 행(회색)에서 손익이 확정됩니다. 구분 칸에는 '{ENT}' 또는 '{EXT}'만 입력하세요."; t["A2"].font = f_note
     pa = "진입가" if short else "매수가"
     heads = ["No", "일시(KST)", "구분", "내용", "체결수량(개)", "체결금액(USDT)", "체결가(USDT)", "수수료율", "거래수수료(USDT)", "펀딩비(USDT, 입력)",
-             "보유수량(거래 후)", "보유금액(USDT, 체결가 기준)", "평균 " + pa, "미배분 진입수수료", "배분된 진입수수료", "실현손익 수수료 전(USDT)", "순손익 수수료 후(USDT)",
+             "보유수량(거래 후)", "보유금액(USDT)\n레버리지 반영(명목)", "보유금액(USDT)\n레버리지 미반영(증거금)", "평균 " + pa, "미배분 진입수수료", "배분된 진입수수료", "실현손익 수수료 전(USDT)", "순손익 수수료 후(USDT)",
              "수익률 수수료 전", "수익률 수수료 후", "누적 손익 수수료 전(USDT)", "누적 순손익 수수료 후(USDT)", "누적 수익률 수수료 전", "누적 수익률 수수료 후", "누적 수수료(USDT)"]
     HR = 4
     for j, h in enumerate(heads, 1):
@@ -165,27 +165,28 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
         t.cell(x, 9, f'={gd}F{x}*H{x})')
         t.cell(x, 11, f'={gd}N(K{p})+IF($C{x}={E_},E{x},-E{x}))')
         t.cell(x, 12, f'={gd}K{x}*G{x})')
-        t.cell(x, 13, f'={gd}IF($C{x}={E_},(N(K{p})*N(M{p})+F{x})/K{x},IF(ROUND(K{x},6)=0,0,N(M{p}))))')
-        t.cell(x, 14, f'={gd}ROUND(IF($C{x}={E_},N(N{p})+I{x},N(N{p})-O{x}),10))')
-        t.cell(x, 15, f'={gd}IF($C{x}={E_},0,N(N{p})*E{x}/N(K{p})))')
-        t.cell(x, 16, f'={gd}IF($C{x}={E_},0,' + (f'E{x}*(N(M{p})-G{x})' if short else f'E{x}*(G{x}-N(M{p}))') + '))')
-        t.cell(x, 17, f'={gd}IF($C{x}={E_},0,P{x}-I{x}-O{x}-J{x}))')
-        t.cell(x, 18, f'={gd}IF($C{x}={E_},0,P{x}/(E{x}*N(M{p}))))')
-        t.cell(x, 19, f'={gd}IF($C{x}={E_},0,Q{x}/(E{x}*N(M{p}))))')
-        t.cell(x, 20, f'={gd}N(T{p})+P{x})'); t.cell(x, 21, f'={gd}N(U{p})+Q{x})')
-        t.cell(x, 22, f"={gd}T{x}/'설명·가정'!$B$10)"); t.cell(x, 23, f"={gd}U{x}/'설명·가정'!$B$10)")
-        t.cell(x, 24, f'={gd}N(X{p})+I{x})')
-        for j in range(1, 25):
+        t.cell(x, 13, f"={gd}L{x}/'설명·가정'!$B$7)")
+        t.cell(x, 14, f'={gd}IF($C{x}={E_},(N(K{p})*N(N{p})+F{x})/K{x},IF(ROUND(K{x},6)=0,0,N(N{p}))))')
+        t.cell(x, 15, f'={gd}ROUND(IF($C{x}={E_},N(O{p})+I{x},N(O{p})-P{x}),10))')
+        t.cell(x, 16, f'={gd}IF($C{x}={E_},0,N(O{p})*E{x}/N(K{p})))')
+        t.cell(x, 17, f'={gd}IF($C{x}={E_},0,' + (f'E{x}*(N(N{p})-G{x})' if short else f'E{x}*(G{x}-N(N{p}))') + '))')
+        t.cell(x, 18, f'={gd}IF($C{x}={E_},0,Q{x}-I{x}-P{x}-J{x}))')
+        t.cell(x, 19, f'={gd}IF($C{x}={E_},0,Q{x}/(E{x}*N(N{p}))))')
+        t.cell(x, 20, f'={gd}IF($C{x}={E_},0,R{x}/(E{x}*N(N{p}))))')
+        t.cell(x, 21, f'={gd}N(U{p})+Q{x})'); t.cell(x, 22, f'={gd}N(V{p})+R{x})')
+        t.cell(x, 23, f"={gd}U{x}/'설명·가정'!$B$10)"); t.cell(x, 24, f"={gd}V{x}/'설명·가정'!$B$10)")
+        t.cell(x, 25, f'={gd}N(Y{p})+I{x})')
+        for j in range(1, 26):
             c = t.cell(x, j); c.font = f_in if j in (2, 3, 4, 5, 6, 10) else f_norm; c.border = box
             if d and d["label"] and not isE(d["label"]) and not short and False: pass
             if d and not (isE(d["label"])): c.fill = fill_cover
             if j in (1, 3, 4): c.alignment = Alignment(horizontal="center")
-    fm = {5: "#,##0", 6: "#,##0.00", 7: "0.000000", 8: "0.00%", 9: "0.0000", 10: "0.0000;[Red]-0.0000;-", 11: "#,##0", 12: "#,##0.00;;-", 13: "0.000000;;-", 14: "0.0000;;-", 15: "0.0000;;-",
-          16: "0.0000;[Red]-0.0000;-", 17: "0.0000;[Red]-0.0000;-", 18: "0.00%;[Red]-0.00%;-", 19: "0.00%;[Red]-0.00%;-", 20: "0.0000;[Red]-0.0000;-", 21: "0.0000;[Red]-0.0000;-",
-          22: "0.00%;[Red]-0.00%;-", 23: "0.00%;[Red]-0.00%;-", 24: "0.0000"}
+    fm = {5: "#,##0", 6: "#,##0.00", 7: "0.000000", 8: "0.00%", 9: "0.0000", 10: "0.0000;[Red]-0.0000;-", 11: "#,##0", 12: "#,##0.00;;-", 13: "#,##0.00;;-", 14: "0.000000;;-", 15: "0.0000;;-", 16: "0.0000;;-",
+          17: "0.0000;[Red]-0.0000;-", 18: "0.0000;[Red]-0.0000;-", 19: "0.00%;[Red]-0.00%;-", 20: "0.00%;[Red]-0.00%;-", 21: "0.0000;[Red]-0.0000;-", 22: "0.0000;[Red]-0.0000;-",
+          23: "0.00%;[Red]-0.00%;-", 24: "0.00%;[Red]-0.00%;-", 25: "0.0000"}
     for x in range(first, last + 1):
         for j, f in fm.items(): t.cell(x, j).number_format = f
-    for j, w in enumerate([5, 17, 9, 18, 12, 14, 13, 9, 13, 12, 13, 15, 13, 13, 13, 15, 15, 11, 11, 16, 16, 13, 13, 12], 1): t.column_dimensions[L(j)].width = w
+    for j, w in enumerate([5, 17, 9, 18, 12, 14, 13, 9, 13, 12, 13, 17, 17, 13, 13, 13, 15, 15, 11, 11, 16, 16, 13, 13, 12], 1): t.column_dimensions[L(j)].width = w
     t.freeze_panes = t.cell(first, 5)
     dv = DataValidation(type="list", formula1=f'"{ENT},{EXT}"', allow_blank=True); t.add_data_validation(dv); dv.add(f"C{first}:C{last}")
 
@@ -198,19 +199,19 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
      ("총 체결금액 (USDT)", f"=SUM({rg('F')})", "#,##0.00"),                           # 6
      (f"총 거래수수료 ({ENT}+{EXT}, USDT)", f"=SUM({rg('I')})", "0.0000"),             # 7
      ("총 펀딩비 (USDT)", f"=SUM({rg('J')})", "0.0000"),                               # 8
-     ("실현손익 수수료 전 (USDT)", f"=SUM({rg('P')})", "0.0000;[Red]-0.0000"),         # 9
-     ("실현 순손익 수수료 후 (USDT)", f"=SUM({rg('Q')})", "0.0000;[Red]-0.0000"),       # 10
+     ("실현손익 수수료 전 (USDT)", f"=SUM({rg('Q')})", "0.0000;[Red]-0.0000"),         # 9
+     ("실현 순손익 수수료 후 (USDT)", f"=SUM({rg('R')})", "0.0000;[Red]-0.0000"),       # 10
      ("수수료가 손익에서 차지한 비중", "=IF(B9=0,0,B7/B9)", "0.0%"),                    # 11
      ("기준 자본 (USDT)", "='설명·가정'!B10", "#,##0.00"),                              # 12
      ("실현 누적 수익률 수수료 전", "=B9/B12", "0.00%;[Red]-0.00%"),                   # 13
      ("실현 누적 수익률 수수료 후", "=B10/B12", "0.00%;[Red]-0.00%"),                  # 14
-     (f"승률 (순손익 > 0인 {EXT} 비율)", f'=IF(B5=0,0,COUNTIFS({rg("C")},"{EXT}",{rg("Q")},">0")/B5)', "0.0%"),  # 15
+     (f"승률 (순손익 > 0인 {EXT} 비율)", f'=IF(B5=0,0,COUNTIFS({rg("C")},"{EXT}",{rg("R")},">0")/B5)', "0.0%"),  # 15
      (f"{EXT} 1회 평균 순손익 (USDT)", "=IF(B5=0,0,B10/B5)", "0.0000;[Red]-0.0000"),    # 16
      ("현재 보유수량 (개)", f"={last_num('K')}", "#,##0"),                              # 17
-     ("현재 평균 " + pa, f"={last_num('M')}", "0.000000"),                              # 18
+     ("현재 평균 " + pa, f"={last_num('N')}", "0.000000"),                              # 18
      ("현재가 (USDT)", "='설명·가정'!B11", "0.000000"),                                 # 19
      ("미실현 평가손익 수수료 전 (USDT)", ("=IF(B17=0,0,B17*(B18-B19))" if short else "=IF(B17=0,0,B17*(B19-B18))"), "0.0000;[Red]-0.0000"),  # 20
-     ("미배분 진입수수료 (USDT)", f"={last_num('N')}", "0.0000"),                       # 21
+     ("미배분 진입수수료 (USDT)", f"={last_num('O')}", "0.0000"),                       # 21
      ("예상 청산 수수료 (USDT)", "=B17*B19*'설명·가정'!B5", "0.0000"),                  # 22
      ("미실현 순손익 수수료 후 (USDT)", "=B20-B21-B22", "0.0000;[Red]-0.0000"),          # 23
      ("총 순손익 (실현+미실현, USDT)", "=B10+B23", "0.0000;[Red]-0.0000"),               # 24
@@ -225,7 +226,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     s.column_dimensions["A"].width = 40; s.column_dimensions["B"].width = 18
     s["A27"] = "※ 수수료 비중 = 총 수수료 ÷ 수수료 전 실현손익. 미실현은 현재가(설명·가정 시트 B11) 기준 추정입니다."; s["A27"].font = f_note
     ch = LineChart(); ch.title = "누적 순손익 (수수료 후, USDT)"; ch.y_axis.title = "USDT"; ch.x_axis.title = "체결 번호"
-    ch.add_data(Reference(t, min_col=21, min_row=HR, max_row=last), titles_from_data=True)
+    ch.add_data(Reference(t, min_col=22, min_row=HR, max_row=last), titles_from_data=True)
     ch.set_categories(Reference(t, min_col=1, min_row=first, max_row=last)); ch.height = 8; ch.width = 18; s.add_chart(ch, "D3")
     # 수식 구문 점검(괄호 균형)
     bad = 0
