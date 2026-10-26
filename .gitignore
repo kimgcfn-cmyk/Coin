@@ -10,3 +10,6 @@ __pycache__/
 # 거래 원장 / 자동생성 엑셀 — 서버에서 계속 갱신되는 데이터라 git 추적 제외
 *_ledger.csv
 코인매매_수익률.xlsx
+
+# 자동 생성되는 수익률 엑셀 (coin_excel_export.py)
+코인봇수익률/
