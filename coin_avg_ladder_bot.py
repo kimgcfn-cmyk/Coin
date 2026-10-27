@@ -6,9 +6,9 @@ coin_grid_bot.py 의 주문·시세·상태 도구를 그대로 쓴다(모의 �
 
 [전략 — 롱 기준, 숏은 방향만 반대(거울)]
   0) 첫 진입: 처음 가동하면(시세 5분 기록 후) 롱·숏 모두 기다리지 않고 바로 first_entry_usdt(100 USDT)를 같이 진입한다(2026-10-27 사용자 지시).
-  1) 진입 사다리: 보유가 없으면 직전 5분 평균가가 기준 → 그보다 −2% 낮을 때 100 USDT 매수. 보유 중이면 평균단가 기준으로
-     −2% → −3% → −4% → −5% → −6% 단계마다 100 USDT씩 추가 매수(최대 5단계, 한도 max_total_usdt 600 안에서).
-  2) 청산 사다리: 평균단가 +2% → +3% → … → +6%에서 단계마다 100 USDT씩 시장가 매도(평균가 아래에서는 팔지 않음). 남는 물량이 반 칸 미만이면 전량.
+  1) 진입 사다리: 보유가 없으면 직전 5분 평균가가 기준 → 그보다 −1% 낮을 때 100 USDT 매수(2026-10-27 ±2%→±1%). 보유 중이면 평균단가 기준으로
+     −1% → −2% → −3% → −4% → −5% 단계마다 100 USDT씩 추가 매수(최대 5단계, 한도 max_total_usdt 600 안에서).
+  2) 청산 사다리(keep_usdt>0이면 보유 금액이 그 이하일 때는 청산하지 않고 초과분만 청산 — 2026-10-27, 항상 최소 100 USDT 유지): 평균단가 +1% → +2% → … → +5%에서 단계마다 100 USDT씩 시장가 매도(평균가 아래에서는 팔지 않음). 남는 물량이 반 칸 미만이면 전량.
      매도가 한 번 나가면 진입 사다리는 처음 단계(−2%)로, 추가 매수가 나가면 청산 사다리가 처음 단계로 돌아간다.
   3) 재투입: 수익실현으로 보유가 0이 되면, 현재가가 직전 5분 평균보다 유리할 때(롱은 낮을 때, 숏은 높을 때) reinvest_usdt(100)를 바로 투입한다.
      조건이 안 맞으면 맞을 때까지 기다린다. 손절로 비었을 때는 재투입하지 않는다.
@@ -30,7 +30,7 @@ import coin_grid_bot as g
 CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
-               ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0)):
+               ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -123,9 +123,18 @@ def step(state, price, now, order_fn, log, notify=None):
             if st["bs"] >= nst or st["hold"] + u > cap:
                 st.update(full=True, q_at_full=st["qty"], avg_at_full=st["avg"])
                 log(f"  📌 사다리 완료 — 평균단가 {st['avg']:,.6g}, 손절선 " + " / ".join(f"{(st['avg'] * (1 - s / 100) if L else st['avg'] * (1 + s / 100)):,.6g}" for s in stops))
-    elif can_out and st["qty"] > 1e-12 and st["ss"] < nst and ((price >= st["avg"]) if L else (price <= st["avg"])):
-        qq = u / price
-        if st["qty"] - qq < qq * 0.5: qq = st["qty"]
+    elif can_out and st["qty"] > 1e-12 and st["ss"] < nst and ((price >= st["avg"]) if L else (price <= st["avg"])) and st["hold"] > float(CFG.get("keep_usdt") or 0) + 1e-9 and \
+            (st["qty"] * (st["hold"] - float(CFG.get("keep_usdt") or 0)) / st["hold"]) * price >= 6:
+        if CFG.get("sell_pct"):        # 보유물량의 sell_pct% 매도: start=이번 청산 사다리 시작 때 물량 기준(5단계×20%=전량), current=그때그때 남은 물량 기준
+            if st["ss"] == 0 or not st.get("ss_base"): st["ss_base"] = st["qty"]
+            qq = (st["ss_base"] if CFG.get("sell_pct_of", "start") == "start" else st["qty"]) * CFG["sell_pct"] / 100
+            if st["ss"] >= nst - 1 or qq * price < 6 or st["qty"] - qq < qq * 0.5: qq = st["qty"]
+        else:
+            qq = u / price
+            if st["qty"] - qq < qq * 0.5: qq = st["qty"]
+        keep = float(CFG.get("keep_usdt") or 0)
+        if keep > 0:        # 보유 금액이 keep_usdt 이하면 청산하지 않고, 초과분만 청산한다 (2026-10-27 사용자 지시)
+            qq = min(qq, st["qty"] * (st["hold"] - keep) / st["hold"])
         if do_out(qq, f"청산 {st['ss'] + 1}단계"):
             st["ss"] += 1; st["bs"] = 0; st["stopped"] = 0; st["full"] = False
             if st["qty"] <= 1e-12:
@@ -134,6 +143,8 @@ def step(state, price, now, order_fn, log, notify=None):
     elif not ev:
         pos = f"보유 {st['qty']:.4f}개 평균 {st['avg']:,.6g} ({(price / st['avg'] - 1) * 100 * (1 if L else -1):+.2f}%) {st['hold']:.0f}USDT 진입단계 {st['bs']} 청산단계 {st['ss']}" if st["qty"] > 1e-12 else \
               ("재투입 대기" if st["want_re"] else "보유 없음")
+        if st["qty"] > 1e-12 and can_out and ((price >= st["avg"]) if L else (price <= st["avg"])) and st["hold"] <= float(CFG.get("keep_usdt") or 0) + 1e-9:
+            pos += f" | 청산선 도달했지만 보유 {st['hold']:.0f}USDT ≤ 유지 {CFG['keep_usdt']:.0f}USDT라 청산 보류"
         log(f"  대기 — {pos} | 기준 {base:,.6g} 진입선 {ent_lv:,.6g} 청산선 {ext_lv:,.6g}" + (" | 급변 중(신규 진입 중단)" if moved else ""))
     return ev
 
