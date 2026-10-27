@@ -98,7 +98,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     def kind(lab, entry):
         if "추격" in lab: return "급락 추격 숏" if short else "급등 추격 매수"
         if "분할" in lab: return "급락 분할 환매 " + lab.split()[-1] if short else "급등 분할 매도"
-        if "편입" in lab: return "수동 숏 편입"
+        if "편입" in lab: return "수동 숏 편입" if short else "수동 롱 편입"
         if "보강" in lab: return "하락 추세 숏 보강"
         if "사다리" in lab: return "하락 추세 사다리 환매"
         if "수동" in lab: return "수동 청산(시장가)"
