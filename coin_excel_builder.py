@@ -25,8 +25,8 @@ thin = Side(style="thin", color="BFBFBF"); box = Border(left=thin, right=thin, t
 ctr = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 import math
-def add_strategy_sheet(wb, name, short, st):
-    ws = wb.create_sheet("전략 요약", 0)
+def add_strategy_sheet(wb, name, short, st, prefix=""):
+    ws = wb.create_sheet(prefix + "전략 요약", 0)
     sec_fill = PatternFill("solid", fgColor="D9E2F3")
     widths = {"A": 24, "B": 62, "C": 72}
     for k, w in widths.items(): ws.column_dimensions[k].width = w
@@ -60,6 +60,7 @@ def add_strategy_sheet(wb, name, short, st):
         ws.cell(r, 1, a_).font = f_bold
         cb = ws.cell(r, 2, b_); cb.font = f_norm
         if isinstance(b_, str) and b_.startswith("='설명·가정'"):
+            cb.value = b_.replace("'설명·가정'", "'" + prefix + "설명·가정'")      # 롱·숏 한 파일일 때 시트 이름 접두어
             cb.font = Font(name=AR, size=10, color="008000")        # 다른 시트 링크 = 초록
         cb.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
         ws.cell(r, 3, c_).font = f_note
@@ -91,8 +92,9 @@ def add_strategy_sheet(wb, name, short, st):
     ws.sheet_view.showGridLines = False
     return ws
 
-def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_notes, spare=0, rate=0.0004, strategy=None, extra=None, now_kst=None):
+def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_notes, spare=0, rate=0.0004, strategy=None, extra=None, now_kst=None, wb_in=None, prefix=""):
     short = mode == "short"
+    A_, T_ = "'" + prefix + "설명·가정'", "'" + prefix + "거래내역'"          # 시트 이름(수식용)
     ENT, EXT = ("숏 진입", "환매") if short else ("매수", "매도")
     isE = (lambda lab: ("진입" in lab or "추격" in lab or "보강" in lab or "편입" in lab)) if short else (lambda lab: "매수" in lab)
     def kind(lab, entry):
@@ -104,7 +106,8 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
         if "수동" in lab: return "수동 청산(시장가)"
         if "고점" in lab: return "고점 청산"
         return ("그리드 진입" if entry else "그리드 환매") if short else ("그리드 매수" if entry else "그리드 매도")
-    wb = Workbook(); a = wb.active; a.title = "설명·가정"
+    if wb_in is None: wb = Workbook(); a = wb.active; a.title = prefix + "설명·가정"
+    else: wb = wb_in; a = wb.create_sheet(prefix + "설명·가정")
     a["A1"] = f"{name} {'숏' if short else '롱'} 그리드 봇 — 매수·매도 과정과 수익률"; a["A1"].font = f_title
     a["A2"] = intro; a["A2"].font = f_note
     a["A3"] = "파란 글자 = 입력값, 검은 글자 = 수식, 노란 칸 = 핵심 가정. 거래내역의 노란 헤더 아래 파란 칸(일시·구분·내용·수량·금액·펀딩비)만 입력하면 나머지는 자동 계산됩니다."; a["A3"].font = f_note
@@ -144,7 +147,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     for i, tx in enumerate(extra_notes + ["· 금액·수량은 봇 로그 값이며 거래소 체결 내역과 반올림 차이가 있을 수 있습니다.", "· 과거 결과일 뿐이며 투자 조언이 아닙니다."]): a.cell(26 + i, 1, tx).font = f_note
     a.column_dimensions["A"].width = 40; a.column_dimensions["B"].width = 16; a.column_dimensions["C"].width = 95
 
-    t = wb.create_sheet("거래내역"); t["A1"] = f"{name} {'숏' if short else '롱'} 봇 — {ENT}·{EXT} 과정과 수익률"; t["A1"].font = f_title
+    t = wb.create_sheet(prefix + "거래내역"); t["A1"] = f"{name} {'숏' if short else '롱'} 봇 — {ENT}·{EXT} 과정과 수익률"; t["A1"].font = f_title
     t["A2"] = f"행 1건 = 체결 1건. {EXT} 행(회색)에서 손익이 확정됩니다. 구분 칸에는 '{ENT}' 또는 '{EXT}'만 입력하세요."; t["A2"].font = f_note
     pa = "진입가" if short else "매수가"
     heads = ["No", "일시(KST)", "구분", "내용", "체결수량(개)", "체결금액(USDT)", "체결가(USDT)", "수수료율", "거래수수료(USDT)", "펀딩비(USDT, 입력)",
@@ -167,11 +170,11 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
             t.cell(x, 1, i + 1)
         t.cell(x, 10, 0 if d else None)
         t.cell(x, 7, f'={gd}F{x}/E{x})')
-        t.cell(x, 8, f"={gd}'설명·가정'!$B$5)")
+        t.cell(x, 8, f"={gd}{A_}!$B$5)")
         t.cell(x, 9, f'={gd}F{x}*H{x})')
         t.cell(x, 11, f'={gd}N(K{p})+IF($C{x}={E_},E{x},-E{x}))')
         t.cell(x, 12, f'={gd}K{x}*G{x})')
-        t.cell(x, 13, f"={gd}L{x}/'설명·가정'!$B$7)")
+        t.cell(x, 13, f"={gd}L{x}/{A_}!$B$7)")
         t.cell(x, 14, f'={gd}IF($C{x}={E_},(N(K{p})*N(N{p})+F{x})/K{x},IF(ROUND(K{x},6)=0,0,N(N{p}))))')
         t.cell(x, 15, f'={gd}ROUND(IF($C{x}={E_},N(O{p})+I{x},N(O{p})-P{x}),10))')
         t.cell(x, 16, f'={gd}IF($C{x}={E_},0,N(O{p})*E{x}/N(K{p})))')
@@ -180,7 +183,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
         t.cell(x, 19, f'={gd}IF($C{x}={E_},0,Q{x}/(E{x}*N(N{p}))))')
         t.cell(x, 20, f'={gd}IF($C{x}={E_},0,R{x}/(E{x}*N(N{p}))))')
         t.cell(x, 21, f'={gd}N(U{p})+Q{x})'); t.cell(x, 22, f'={gd}N(V{p})+R{x})')
-        t.cell(x, 23, f"={gd}U{x}/'설명·가정'!$B$10)"); t.cell(x, 24, f"={gd}V{x}/'설명·가정'!$B$10)")
+        t.cell(x, 23, f"={gd}U{x}/{A_}!$B$10)"); t.cell(x, 24, f"={gd}V{x}/{A_}!$B$10)")
         t.cell(x, 25, f'={gd}N(Y{p})+I{x})')
         t.cell(x, 26, f'={gd}ROUND((DATEVALUE(LEFT($B{x},10))+TIMEVALUE(MID($B{x},12,5))-DATEVALUE(LEFT($B${first},10))-TIMEVALUE(MID($B${first},12,5)))*24,4))')
         for j in range(1, 27):
@@ -197,8 +200,8 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     t.freeze_panes = t.cell(first, 5)
     dv = DataValidation(type="list", formula1=f'"{ENT},{EXT}"', allow_blank=True); t.add_data_validation(dv); dv.add(f"C{first}:C{last}")
 
-    s = wb.create_sheet("요약"); s["A1"] = "요약 (거래내역 시트에서 자동 계산)"; s["A1"].font = f_title
-    rg = lambda col: f"거래내역!${col}${first}:${col}${last}"
+    s = wb.create_sheet(prefix + "요약"); s["A1"] = "요약 (거래내역 시트에서 자동 계산)"; s["A1"].font = f_title
+    rg = lambda col: f"{T_}!${col}${first}:${col}${last}"
     last_num = lambda col: f"IFERROR(LOOKUP(9.99E+307,{rg(col)}),0)"
     now_kst = now_kst or globals().get("NOW_KST")
     elapsed_now = None
@@ -217,17 +220,17 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
      ("실현손익 수수료 전 (USDT)", f"=SUM({rg('Q')})", "0.0000;[Red]-0.0000"),         # 9
      ("실현 순손익 수수료 후 (USDT)", f"=SUM({rg('R')})", "0.0000;[Red]-0.0000"),       # 10
      ("수수료가 손익에서 차지한 비중", "=IF(B9=0,0,B7/B9)", "0.0%"),                    # 11
-     ("기준 자본 (USDT)", "='설명·가정'!B10", "#,##0.00"),                              # 12
+     ("기준 자본 (USDT)", f"={A_}!B10", "#,##0.00"),                              # 12
      ("실현 누적 수익률 수수료 전", "=B9/B12", "0.00%;[Red]-0.00%"),                   # 13
      ("실현 누적 수익률 수수료 후", "=B10/B12", "0.00%;[Red]-0.00%"),                  # 14
      (f"승률 (순손익 > 0인 {EXT} 비율)", f'=IF(B5=0,0,COUNTIFS({rg("C")},"{EXT}",{rg("R")},">0")/B5)', "0.0%"),  # 15
      (f"{EXT} 1회 평균 순손익 (USDT)", "=IF(B5=0,0,B10/B5)", "0.0000;[Red]-0.0000"),    # 16
      ("현재 보유수량 (개)", f"={last_num('K')}", "#,##0"),                              # 17
      ("현재 평균 " + pa, f"={last_num('N')}", "0.000000"),                              # 18
-     ("현재가 (USDT)", "='설명·가정'!B11", "0.000000"),                                 # 19
+     ("현재가 (USDT)", f"={A_}!B11", "0.000000"),                                 # 19
      ("미실현 평가손익 수수료 전 (USDT)", ("=IF(B17=0,0,B17*(B18-B19))" if short else "=IF(B17=0,0,B17*(B19-B18))"), "0.0000;[Red]-0.0000"),  # 20
      ("미배분 진입수수료 (USDT)", f"={last_num('O')}", "0.0000"),                       # 21
-     ("예상 청산 수수료 (USDT)", "=B17*B19*'설명·가정'!B5", "0.0000"),                  # 22
+     ("예상 청산 수수료 (USDT)", f"=B17*B19*{A_}!B5", "0.0000"),                  # 22
      ("미실현 순손익 수수료 후 (USDT)", "=B20-B21-B22", "0.0000;[Red]-0.0000"),          # 23
      ("총 순손익 (실현+미실현, USDT)", "=B10+B23", "0.0000;[Red]-0.0000"),               # 24
      ("총 수익률 (기준 자본 대비)", "=B24/B12", "0.00%;[Red]-0.00%"),                    # 25
@@ -280,10 +283,122 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
                 if isinstance(c.value, str) and c.value.startswith("="):
                     tk = Tokenizer(c.value)
                     if c.value.count("(") != c.value.count(")"): bad += 1; print("괄호 불일치:", ws.title, c.coordinate, c.value)
-    if strategy: add_strategy_sheet(wb, name, short, strategy)
+    if strategy: add_strategy_sheet(wb, name, short, strategy, prefix)
     if extra: extra(wb)
+    if wb_in is not None:                       # 롱·숏 한 파일로 합칠 때는 호출한 쪽에서 저장하고 합계를 만든다
+        return dict(first=first, last=last, bad=bad, t=t, s=s)
     wb.calculation.fullCalcOnLoad = True
     wb.save(path); return dict(first=first, last=last, bad=bad)
+
+def build_pair(path, name, long_args, short_args, now_kst=None, intro=""):
+    """롱·숏 한 파일: 롱/숏 시트를 각각 만들고(접두어 '롱 '/'숏 ') 맨 앞에 '합계 요약'·'합산 추이'를 둔다.
+    long_args/short_args 는 build() 의 인자(path 제외, wb_in/prefix 제외)를 dict 로 넘긴다."""
+    wb = Workbook(); wb.remove(wb.active)
+    rl = build(None, **long_args, wb_in=wb, prefix="롱 ", now_kst=now_kst)
+    rs = build(None, **short_args, wb_in=wb, prefix="숏 ", now_kst=now_kst)
+    fl, fs = long_args["fills"], short_args["fills"]
+    # ── 합산 추이: 두 쪽 체결을 시간순으로 합친 표 (손익은 각 거래내역 시트 R열을 그대로 연결) ──
+    ev = [(d["t"], 0, i, "롱") for i, d in enumerate(fl)] + [(d["t"], 1, i, "숏") for i, d in enumerate(fs)]
+    ev.sort()
+    m = wb.create_sheet("합산 추이")
+    m["A1"] = f"{name} 롱+숏 합산 추이 — 체결 순서대로 누적 순손익"; m["A1"].font = f_title
+    m["A2"] = "롱·숏 거래내역의 순손익(수수료 후)을 시간순으로 합쳐 롱 누적, 숏 누적, 합계 누적을 보여줍니다. 진입 행은 손익 0이고 청산 행에서 손익이 확정됩니다."; m["A2"].font = f_note
+    heads = ["No", "일시(KST)", "롱/숏", "내용", "체결 순손익(USDT)", "롱 누적(USDT)", "숏 누적(USDT)", "합계 누적(USDT)", "경과시간(시간)"]
+    HR = 4
+    for j, h in enumerate(heads, 1):
+        c = m.cell(HR, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
+    m.row_dimensions[HR].height = 30
+    mfirst = HR + 1
+    for k, (tt, side_i, i, lab) in enumerate(ev):
+        x = mfirst + k; p = x - 1
+        src = ("'롱 거래내역'", rl["first"] + i) if side_i == 0 else ("'숏 거래내역'", rs["first"] + i)
+        m.cell(x, 1, k + 1)
+        m.cell(x, 2, f"={src[0]}!B{src[1]}"); m.cell(x, 3, lab)
+        m.cell(x, 4, f"={src[0]}!C{src[1]}&\" \"&{src[0]}!D{src[1]}")
+        m.cell(x, 5, f"=N({src[0]}!R{src[1]})")
+        m.cell(x, 6, f'=N(F{p})+IF($C{x}="롱",$E{x},0)')
+        m.cell(x, 7, f'=N(G{p})+IF($C{x}="숏",$E{x},0)')
+        m.cell(x, 8, f"=F{x}+G{x}")
+        m.cell(x, 9, f"=ROUND((DATEVALUE(LEFT($B{x},10))+TIMEVALUE(MID($B{x},12,5))-DATEVALUE(LEFT($B${mfirst},10))-TIMEVALUE(MID($B${mfirst},12,5)))*24,4)")
+        for j in range(1, 10):
+            c = m.cell(x, j); c.font = f_green if j == 8 else f_norm; c.border = box
+            if j in (1, 3): c.alignment = Alignment(horizontal="center")
+            if j == 5 and False: pass
+        for j in (5, 6, 7, 8): m.cell(x, j).number_format = "0.0000;[Red]-0.0000;-"
+        m.cell(x, 9).number_format = "0.00"
+    mlast = mfirst + max(len(ev), 1) - 1
+    for j, w in enumerate([5, 17, 7, 34, 15, 15, 15, 15, 13], 1): m.column_dimensions[L(j)].width = w
+    m.freeze_panes = m.cell(mfirst, 3)
+    # ── 합계 요약 ──
+    z = wb.create_sheet("합계 요약")
+    z["A1"] = f"{name} 롱+숏 전략 — 롱·숏 개별과 합계"; z["A1"].font = f_title
+    z["A2"] = intro or "롱 요약·숏 요약 시트의 값을 그대로 가져와 합산합니다. 보유수량·평균가는 합칠 수 없어 개별 값만 표시합니다."; z["A2"].font = f_note
+    for j, h in enumerate(["항목", "롱", "숏", "합계"], 1):
+        c = z.cell(3, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
+    R_ = lambda side, n: f"='{side} 요약'!B{n}"
+    rows = {}
+    def add(key, lab, src_row=None, fmt="0.0000;[Red]-0.0000", total="sum", bold=False, lf=None, sf=None, tf=None):
+        r = 4 + len(rows); rows[key] = r
+        z.cell(r, 1, lab)
+        z.cell(r, 2, lf if lf is not None else R_("롱", src_row)); z.cell(r, 3, sf if sf is not None else R_("숏", src_row))
+        if tf is not None: z.cell(r, 4, tf)
+        elif total == "sum": z.cell(r, 4, f"=B{r}+C{r}")
+        else: z.cell(r, 4, "-"); z.cell(r, 4).alignment = Alignment(horizontal="right")
+        for j in range(1, 5):
+            c = z.cell(r, j); c.border = box; c.font = f_bold if bold else f_norm
+            if j > 1 and fmt: c.number_format = fmt
+        return r
+    add("ent", "진입 체결 횟수 (롱 매수 / 숏 진입)", 4, "0")
+    add("ext", "청산 체결 횟수 (롱 매도 / 숏 환매)", 5, "0")
+    add("amt", "총 체결금액 (USDT)", 6, "#,##0.00")
+    add("fee", "총 거래수수료 (USDT)", 7, "0.0000")
+    add("real", "실현 순손익 수수료 후 (USDT)", 10, bold=True)
+    add("cap", "기준 자본 (USDT)", 12, "#,##0.00")
+    r = rows
+    add("rr", "실현 누적 수익률 (기준 자본 대비)", None, "0.00%;[Red]-0.00%", lf=f"=B{r['real']}/B{r['cap']}", sf=f"=C{r['real']}/C{r['cap']}", tf=f"=D{r['real']}/D{r['cap']}")
+    add("win", "승률 (순손익 > 0인 청산 비율)", 15, "0.0%", lf=None, tf=f"=IF(D{r['ext']}=0,0,('롱 요약'!B15*'롱 요약'!B5+'숏 요약'!B15*'숏 요약'!B5)/D{r['ext']})")
+    add("qty", "현재 보유수량 (개)", 17, "#,##0", total=None)
+    add("avg", "현재 평균 매수가·진입가", 18, "0.000000", total=None)
+    add("px", "현재가 (USDT)", 19, "0.000000", total=None)
+    add("notl", "보유 명목금액 (USDT)", None, "#,##0.00", lf=f"=B{r['qty']}*B{r['px']}", sf=f"=C{r['qty']}*C{r['px']}", tf=f"=B{r['qty']+3}-C{r['qty']+3}")
+    z.cell(r["notl"], 1).value = "보유 명목금액 (USDT) — 합계는 순노출(롱−숏)"
+    add("unr", "미실현 순손익 수수료 후 (USDT)", 23)
+    add("tot", "총 순손익 (실현+미실현, USDT)", 24, bold=True)
+    add("tr", "총 수익률 (기준 자본 대비)", None, "0.00%;[Red]-0.00%", lf=f"=B{r['tot']}/B{r['cap']}", sf=f"=C{r['tot']}/C{r['cap']}", tf=f"=D{r['tot']}/D{r['cap']}", bold=True)
+    add("h12", "최근 12시간 실현 순손익 (USDT)", 28, "0.0000;[Red]-0.0000;-")
+    add("h24", "최근 24시간 실현 순손익 (USDT)", 31, "0.0000;[Red]-0.0000;-")
+    for k in ("real", "tot", "tr"):
+        for j in range(1, 5): z.cell(r[k], j).fill = PatternFill("solid", fgColor="E2EFDA")
+    z.column_dimensions["A"].width = 44
+    for col in "BCD": z.column_dimensions[col].width = 16
+    nr = 4 + len(rows) + 1
+    z.cell(nr, 1, "※ 보유 명목금액 합계는 롱(+)과 숏(−)이 상쇄된 순노출입니다. 기준 자본은 롱·숏 각각의 한도÷레버리지를 더한 값입니다.").font = f_note
+    z.cell(nr + 1, 1, "※ 과거 결과일 뿐이며 투자 조언이 아닙니다.").font = f_note
+    # 합산 추이 그래프 (롱·숏·합계 누적 순손익)
+    ch = ScatterChart(); ch.title = "누적 순손익 — 롱·숏·합계 (수수료 후, USDT)"; ch.style = 2
+    ch.x_axis.title = "경과시간 (시간, 첫 체결 기준)"; ch.y_axis.title = "누적 순손익 (USDT)"
+    xs = Reference(m, min_col=9, min_row=mfirst, max_row=mlast)
+    for col, ttl, color in ((6, "롱", "1F77B4"), (7, "숏", "D62728"), (8, "합계", "2E7D32")):
+        se = Series(Reference(m, min_col=col, min_row=mfirst, max_row=mlast), xs, title=ttl); se.smooth = False
+        se.marker.symbol = "circle"; se.marker.size = 4
+        se.graphicalProperties.line.width = 28000 if col == 8 else 16000; se.graphicalProperties.line.solidFill = color
+        se.marker.graphicalProperties.solidFill = color; se.marker.graphicalProperties.line.solidFill = color
+        ch.series.append(se)
+    ch.legend.position = "b"
+    ch.x_axis.delete = False; ch.y_axis.delete = False
+    ch.y_axis.number_format = '#,##0.00'; ch.x_axis.number_format = '0.0'
+    ch.x_axis.tickLblPos = "low"; ch.y_axis.tickLblPos = "low"
+    for ttl in (ch.title, ch.x_axis.title, ch.y_axis.title): ttl.overlay = False
+    for ax in (ch.x_axis, ch.y_axis): ax.majorGridlines.spPr = GraphicalProperties(ln=LineProperties(solidFill="D9D9D9", w=6350))
+    ch.height = 11; ch.width = 22; z.add_chart(ch, "F3")
+    # 시트 순서
+    order = ["합계 요약", "합산 추이", "롱 요약", "숏 요약", "롱 거래내역", "숏 거래내역", "롱 전략 요약", "숏 전략 요약", "롱 설명·가정", "숏 설명·가정"]
+    byname = {w.title: w for w in wb._sheets}
+    wb._sheets = [byname[n] for n in order if n in byname] + [w for w in wb._sheets if w.title not in order]
+    wb.active = 0
+    wb.calculation.fullCalcOnLoad = True
+    wb.save(path)
+    return dict(long=rl, short=rs, trend_rows=len(ev), bad=rl["bad"] + rs["bad"])
 
 def side_rows(rows, short):
     return rows

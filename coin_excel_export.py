@@ -142,7 +142,7 @@ CAP_RULES = [
  ("매수", "가격이 기준가(평균)보다 −0.5% 이상 내려왔을 때 (한도 미달일 때만, 급락 대응 중이 아닐 때)", "100 USDT어치를 시장가로 매수합니다. 점검 1회에 1건. 이미 보유 중이면 직전 매수가에서 −0.5% 더 내려온 뒤에만 추가 매수합니다(진입 간격 규칙)."),
  ("매도 (이익 실현)", "가격이 기준가(평균)보다 +1% 이상 올랐을 때, 보유가 있을 때. 평균이 내 평균 매수가보다 낮으면 손실로 팔릴 수도 있음", "200 USDT어치를 시장가로 매도합니다. 남는 물량이 200 USDT의 절반 미만이면 전량 매도합니다."),
  ("급등 모드", "1분 안에 저점 대비 +3% 이상 급등", "추격 매수 200 USDT. 그리드 매수·매도를 멈추고, 급등 고점 대비 −3% / −4.5% / −6%에서 3단계로 나눠 매도합니다(3번 연속 확인, 점검당 1단계). 새 고점이 나오면 남은 단계는 새 고점 기준으로 다시 잽니다."),
- ("급락 대응", "5분 안에 고점 대비 −8% 이상 급락", "신규 매수만 멈춥니다(보유분 매도는 그대로). 저점 대비 +2% 반등하거나 30분 동안 새 저점이 없으면 재개합니다."),
+ ("급락 대응", "5분 안에 고점 대비 −8% 이상, 또는 1분 안에 −3% 이상 급락 (10/27 11시경 1분 조건 추가: 숏 급등 보호의 거울)", "신규 매수만 멈춥니다(보유분 매도는 그대로). 저점 대비 +2% 반등하거나 30분 동안 새 저점이 없으면 재개합니다."),
  ("트레일링 청산 + 휴식", "매수한 뒤 가격이 고점 대비 −10% 이하", "봇 물량 전량을 시장가로 청산하고 2시간(120분) 쉽니다. 휴식이 끝나면 기준가·고점을 현재가로 새로 잡고 자동 재개합니다. 보유가 0인 동안은 고점도 현재가로 계속 갱신(첫 매수 이후의 고점부터 잼)."),
  ("그림자 모드", "실거래와 별개로 같은 시세를 보며 가상 거래 기록", "기준가를 직전 5분 / 10분 평균가로 쓰는 두 가지 전략(B5, B10)을 가상으로 돌립니다(트레일 청산·급락 대응 포함, 슬리피지 0.28% 가정). 주문은 내지 않고, 그림자 비교 시트에서 실거래(A)와 비교합니다."),
  ("실행 방식", "서버에서 1분마다 점검(크론)", "모든 주문은 시장가(테이커 수수료 0.04%). 강제 손절은 없고 트레일링 청산이 하락 방어 역할을 합니다."),
@@ -157,7 +157,7 @@ CAP_PARAMS = [
  ("계정 레버리지", LV, "교차 마진. 봇은 명목금액 기준으로 주문하므로 크기는 레버리지와 무관"),
  ("거래 수수료율", FE, "시장가(테이커) 편도. 매수·매도 모두 부과"),
  ("급등 모드", "켬 (추격 매수 200 USDT)", "surge_mode true, surge_chase_usdt 200, 1분 +3% · 확인 3회 · 3단계(−3/−4.5/−6%). 그림자·백테스트의 B5에는 없던 기능이라 검증은 별도"),
- ("급락 대응 기준", "5분 −8%, 재개 +2% 또는 30분", "crash_pct 8, crash_rebound_pct 2, crash_quiet_min 30"),
+ ("급락 대응 기준", "5분 −8% 또는 1분 −3%, 재개 +2% 또는 30분", "crash_pct 8, crash_fast_pct 3 (crash_fast_win_min 1), crash_rebound_pct 2, crash_quiet_min 30"),
  ("트레일링 청산 / 휴식", "고점 −10% / 120분", "trail_exit_pct 10, trail_action liquidate, trail_rest_min 120 (10/26 12:5x 끄는 지시 후 같은 날 다시 켬)"),
  ("진입 간격 규칙", "추가 매수는 직전 매수가 −0.5% 더 내려올 때만", "entry_spacing true — 평균 기준에서 연속 매수 방지 (10/26 12:45 추가)"),
  ("그림자 모드", "B5, B10 (평균 5분 / 10분)", "shadow_modes [5,10], shadow_slip 0.0028 — 가상 거래만 기록"),
@@ -241,7 +241,7 @@ Q_LONG_RULES = [
  ("매수", "가격이 기준가(평균)보다 −1% 이상 내려왔을 때 (한도 미달일 때만, 급락 대응 중이 아닐 때)", "50 USDT어치를 시장가로 매수합니다. 점검 1회에 1건. 진입 간격 규칙은 없어서(10/27 제거) 기준가 −1% 아래에 머무는 동안 매 점검마다 한도까지 이어서 삽니다."),
  ("매도 (이익 실현)", "가격이 기준가(평균)보다 +1% 이상 올랐을 때, 보유가 있을 때, 그리고 현재가가 평균 매수가 이상일 때만", "50 USDT어치를 시장가로 매도합니다(10/27 08:5x 사용자 선택: +2%·100 → +1%·50). 남는 물량이 50 USDT의 절반 미만이면 전량 매도합니다. 평균 매수가보다 낮으면 팔지 않습니다(평균가 보호)."),
  ("급등 모드", "1분 안에 저점 대비 +3% 이상 급등", "추격 매수 100 USDT. 그리드를 멈추고 급등 고점 대비 −3% / −4.5% / −6%에서 3단계로 나눠 매도합니다(3번 연속 확인, 점검당 1단계)."),
- ("급락 대응", "5분 안에 고점 대비 −8% 이상 급락", "신규 매수만 멈춥니다(보유분 매도는 그대로). 저점 대비 +2% 반등하거나 30분 동안 새 저점이 없으면 재개합니다."),
+ ("급락 대응", "5분 안에 고점 대비 −8% 이상, 또는 1분 안에 −3% 이상 급락 (10/27 11시경 1분 조건 추가: 숏 급등 보호의 거울)", "신규 매수만 멈춥니다(보유분 매도는 그대로). 저점 대비 +2% 반등하거나 30분 동안 새 저점이 없으면 재개합니다."),
  ("트레일링 청산 + 휴식", "매수한 뒤 가격이 고점 대비 −15% 이하", "봇 물량 전량을 시장가로 청산하고 2시간(120분) 쉽니다. 휴식이 끝나면 기준가·고점을 현재가로 새로 잡고 자동 재개합니다."),
  ("실행 방식", "서버에서 1분마다 점검(크론)", "모든 주문은 시장가(테이커 수수료 0.04%). 강제 손절은 없고 트레일링 청산이 하락 방어 역할을 합니다. 직접 산 물량은 사용자가 요청할 때만 봇 장부에 편입합니다."),
  ("손익 계산", "이동평균법 (평균 매수가)", "매도 수량 × (매도가 − 평균 매수가) − 수수료. 거래내역 시트에서 확인합니다."),
@@ -254,7 +254,7 @@ Q_LONG_PARAMS = [
  ("진입 간격 규칙", "없음", "entry_spacing false (10/27 사용자 지시로 제거)"),
  ("평균가 보호", "평균 매수가 이상에서만 매도", "sell_min_profit_pct 0"),
  ("급등 모드", "켬 (추격 매수 100 USDT)", "surge_mode true, surge_chase_usdt 100, 1분 +3% · 확인 3회 · 3단계(−3/−4.5/−6%)"),
- ("급락 대응 기준", "5분 −8%, 재개 +2% 또는 30분", "crash_pct 8, crash_rebound_pct 2, crash_quiet_min 30"),
+ ("급락 대응 기준", "5분 −8% 또는 1분 −3%, 재개 +2% 또는 30분", "crash_pct 8, crash_fast_pct 3 (crash_fast_win_min 1), crash_rebound_pct 2, crash_quiet_min 30"),
  ("트레일링 청산 / 휴식", "고점 −15% / 120분", "trail_exit_pct 15, trail_action liquidate, trail_rest_min 120"),
  ("12시간 변화율 필터", "쓰지 않음", "trend_filter false (사용자 지시)"),
  ("계정 레버리지", LV, "교차 마진. 봇은 명목금액 기준으로 주문하므로 크기는 레버리지와 무관"),
@@ -311,6 +311,23 @@ Q_SHORT_BT = [
  "· 평균가 보호(롱+숏 쌍, 18구간): 있음 합계 +33.6 · 없음 −30.4 USDT.",
 ]
 
+CALLS = {}
+
+def _args(call):
+    """save_atomic 용 람다(lambda p: b.build(p, ...))를 가로채 build() 인자를 dict 로 돌려준다 (롱·숏을 한 파일로 합칠 때 사용)."""
+    import inspect
+    got, orig = {}, b.build
+    def fake(p, *a, **k):
+        bound = inspect.signature(orig).bind(p, *a, **k); bound.apply_defaults()
+        got.update({kk: vv for kk, vv in bound.arguments.items() if kk not in ("path", "wb_in", "prefix", "now_kst")}); return {}
+    b.build = fake
+    try: call("x")
+    finally: b.build = orig
+    return got
+
+PAIR_FILES = {"CAP": ("CAP", "CAP", "CAP_L", "CAP_S", ["CAP봇_롱전략_수익률.xlsx", "CAP봇_숏전략_수익률.xlsx"]),
+              "Q":   ("Q", "Q", "Q_L", "Q_S", ["Q봇_롱전략_수익률.xlsx", "Q봇_숏전략_수익률.xlsx"])}
+
 def main():
     out = OUT
     if "--out" in sys.argv: out = sys.argv[sys.argv.index("--out") + 1]
@@ -345,7 +362,7 @@ def main():
     except Exception: shadow = {}
     cap_intro = (f"서버 봇 로그의 실제 체결 {len(fills)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST." if fills else
                  f"CAP 롱 봇은 2026-10-26 07:11 KST에 시작했고 아직 체결이 없습니다(−1% 눌림 대기). 마지막 갱신 {now} KST. 체결이 생기면 자동으로 채워집니다.")
-    save_atomic(os.path.join(out, "CAP봇_롱전략_수익률.xlsx"), lambda p: b.build(p, "CAP", "long", fills, 500, 5, px or 0.0, "조회 시점 시세 (자동 갱신)", cap_intro,
+    CALLS["CAP_L"] = _args(lambda p: b.build(p, "CAP", "long", fills, 500, 5, px or 0.0, "조회 시점 시세 (자동 갱신)", cap_intro,
         ["· 체결 내역은 서버 로그에서 자동으로 채워집니다. 직접 수정한 내용은 다음 갱신 때 덮어써집니다."], spare=0 if fills else 60,
         strategy=dict(subtitle="CAP 가격이 기준가 대비 −0.5% 눌리면 사고 +1% 오르면 파는 롱 그리드 전략에 급등 추격·급락 대응·트레일링 청산(−10%, 2시간 휴식)을 더한 구성입니다. 10/26 11:55부터 기준가를 직전 5분 평균으로 쓰고, B5·B10 그림자 모드는 가상 비교를 계속합니다. 현재 가동 중입니다.",
                       rules=CAP_RULES, params=CAP_PARAMS, history=CAP_HIST, fit=CAP_FIT, backtests=CAP_BT),
@@ -359,8 +376,8 @@ def main():
      ("10/26 16:5x", "하락 추세 모드에 저점 +1/+2/+3/+4/+5% 반등 사다리 환매(1/5씩) 추가", "17:50·17:54·18:08에 3단계 환매"),
      ("10/26 18:3x", "12시간 추세 필터·사다리 끄고 일반 숏 그리드로 전환, 기준가=마지막 체결가(ref_mode=last)", "현재 설정. 수동 숏은 봇 장부 밖으로 분리"),
     ]
-    if fl:        # 체결이 있을 때만 파일을 만든다 (10/26 13:05 숏 전환 후 곧 롱으로 되돌아와 체결 없이 중지됨)
-      save_atomic(os.path.join(out, "CAP봇_숏전략_수익률.xlsx"), lambda p: b.build(p, "CAP 숏", "short", fl, 425, 5, pxx or 0.0, "조회 시점 시세 (자동 갱신)",
+    if True:      # 롱·숏 한 파일에 항상 포함 (체결이 없으면 숏 쪽은 빈 표)
+      CALLS["CAP_S"] = _args(lambda p: b.build(p, "CAP 숏", "short", fl, 425, 5, pxx or 0.0, "조회 시점 시세 (자동 갱신)",
         (f"서버 봇 로그의 실제 체결 {len(fl)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST." if fl else f"CAP 숏 봇은 2026-10-26 13:05 KST에 시작했고 아직 체결이 없습니다(평균 5분 준비·진입 신호 대기). 마지막 갱신 {now} KST."),
         ["· 봇 장부에 편입·정정한 수동 숏 거래('수동 숏 편입'·'수동 청산' 행)는 봇 로그에 없어서 거래소 체결 기준 값을 넣었습니다. 편입하지 않은 수동 숏은 이 표에 넣지 않았습니다(20:05 이후 현재 거래소에 있는 수동 숏 포함).", "· 18:10 '수동 정정 청산' 행은 사용자가 숏을 전량 직접 청산한 뒤 봇 장부 잔량을 0으로 맞춘 것으로, 체결가를 알 수 없어 평균 진입가로 환산했습니다(손익 0, 수수료만 반영).", "· 이 표의 손익은 이동평균법(평균 진입가) 계산이라 거래소의 체결별 실현손익과 다를 수 있고, 수동 거래분이 포함되어 봇 상태 파일의 누적 실현과도 다릅니다.", "· CAP 롱 봇의 이전 거래는 CAP봇_롱전략_수익률.xlsx에 있습니다."], spare=0 if fl else 60,
         strategy=mk_short("ORDER", "프리셋 max_total_usdt 1000", CAPS_HIST, "CAP 가격이 기준가 대비 +0.5% 오를 때 숏을 쌓고 −1% 내리면 회수하는 숏 그리드입니다(현재 설정: 기준가 마지막 체결가, 진입 50·환매 100 USDT, 한도 425, 평균 진입가 이하 환매, 평균가 +15% 손절). 10/26 18:3x부터 추세 필터 없이 일반 그리드로 가동 중이며, 수동 숏은 분리합니다. 아래 규칙·설정 표는 ORDER 기본 값이라 CAP의 현재 값과 다를 수 있습니다.")))
@@ -369,12 +386,22 @@ def main():
         ("Q_L", "long", "Q", "Q봇_롱전략_수익률.xlsx", Q_LONG_RULES, Q_LONG_PARAMS, Q_LONG_HIST, Q_LONG_FIT, Q_LONG_BT,
          "Q 가격이 기준가(직전 5분 평균) 대비 −1% 눌리면 50 USDT 사고 +1% 오르면 50 USDT 파는 롱 그리드(평균 매수가 이상에서만 매도, 진입 간격 없음)에 급등 추격·급락 대응·트레일링 청산(−15%, 2시간 휴식)을 더한 구성입니다. 10/27 08:43부터 실전이고 직접 산 롱 767개를 장부에 편입했습니다."),
         ("Q_S", "short", "Q 숏", "Q봇_숏전략_수익률.xlsx", Q_SHORT_RULES, Q_SHORT_PARAMS, Q_SHORT_HIST, SHORT_FIT, Q_SHORT_BT,
-         "Q 가격이 기준가(직전 5분 평균) 대비 +1% 오르면 50 USDT 숏을 쌓고 −2% 내리면 100 USDT 회수하는 숏 그리드(평균 진입가 이하에서만 환매, 진입 간격 없음)입니다. 10/27 08:41부터 실전이며 Q 롱과 함께 양방향 전략으로 돕니다.")):
+         "Q 가격이 기준가(직전 5분 평균) 대비 +1% 오르면 50 USDT 숏을 쌓고 −1% 내리면 50 USDT 회수하는 숏 그리드(평균 진입가 이하에서만 환매, 진입 간격 없음)입니다. 10/27 08:41부터 실전이며 Q 롱과 함께 양방향 전략으로 돕니다.")):
         fl, stt, pxx = res[key]
-        save_atomic(os.path.join(out, fname), lambda p, fl=fl, mode=mode, nm=nm, pxx=pxx, rules=rules, params=params, hist=hist, fit=fit, bt=bt, sub=sub, key=key: b.build(p, nm, mode, fl, 300, 5, pxx or 0.0, "조회 시점 시세 (자동 갱신)",
+        CALLS[key] = _args(lambda p, fl=fl, mode=mode, nm=nm, pxx=pxx, rules=rules, params=params, hist=hist, fit=fit, bt=bt, sub=sub, key=key: b.build(p, nm, mode, fl, 300, 5, pxx or 0.0, "조회 시점 시세 (자동 갱신)",
             (f"서버 봇 로그의 실제 체결 {len(fl)}건으로 자동 생성한 파일입니다(모의 가동 때 체결은 제외). 마지막 갱신 {now} KST." if fl else f"Q {'롱' if mode == 'long' else '숏'} 봇은 2026-10-27에 실전 가동을 시작했고 아직 실전 체결이 없습니다. 마지막 갱신 {now} KST. 체결이 생기면 자동으로 채워집니다."),
             ["· 체결 내역은 서버 로그에서 자동으로 채워집니다. 직접 수정한 내용은 다음 갱신 때 덮어써집니다.", "· 모의 가동 때의 가상 체결은 포함하지 않았습니다." + (" 편입한 수동 롱 767개는 거래소 포지션 기준으로 넣었습니다(수수료는 같은 비율로 계산한 추정)." if key == "Q_L" else "")],
             spare=0 if fl else 60, strategy=dict(subtitle=sub, rules=rules, params=params, history=hist, fit=fit, backtests=bt)))
+    # ── 롱·숏 한 파일 (CAP, Q): 롱 / 숏 개별 시트 + 합계 요약·합산 추이 ──
+    for tag, (nm, label, kl, ks, olds) in PAIR_FILES.items():
+        la, sa = CALLS[kl], CALLS[ks]
+        fn = f"{label}봇_롱숏전략_수익률.xlsx"
+        save_atomic(os.path.join(out, fn), lambda p, la=la, sa=sa, nm=nm: b.build_pair(p, nm, la, sa, now_kst=now))
+        old_dir = os.path.join(out, "이전")                      # 예전 롱·숏 개별 파일은 지우지 않고 '이전' 폴더로 옮긴다
+        for o in olds:
+            src = os.path.join(out, o)
+            if os.path.exists(src):
+                os.makedirs(old_dir, exist_ok=True); os.replace(src, os.path.join(old_dir, o))
     # ── IRYS 그림자(모의 체결) ──
     for key, side, title, fname in (("IRYS_L", "long", "IRYS 롱(가상)", "IRYS_롱_가상거래.xlsx"), ("IRYS_S", "short", "IRYS 숏(가상)", "IRYS_숏_가상거래.xlsx")):
         fl, stt, pxx = res[key]
