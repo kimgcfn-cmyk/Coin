@@ -1,0 +1,25 @@
+{
+  "name": "cap_long_pair_300",
+  "symbol": "CAP/USDT:USDT",
+  "설명": "CAP 롱+숏 동시(양방향) 전략 — 실전 (2026-10-27 사용자 요청으로 모의 가동 직후 실전 투입). 횡보·왕복 코인 스캔(69종목)에서 1순위 후보. 롱·숏 같은 조건: 기준가 = 직전 5분 평균가, 간격 1%·크기 50USDT(롱: 평균 −1%에 50 매수 / +1%에 50 매도, 숏: 평균 +1%에 50 진입 / −1%에 50 환매), 한도 각 300USDT, 진입 간격 규칙 없음, 평균가 보호(롱은 평균 매수가 이상에서만 매도, 숏은 평균 진입가 이하에서만 환매), 급등·급락 모드 추격 100USDT, 롱 고점 −15% 전량 청산·2시간 휴식 / 숏 평균 진입가 +15% 강제 손절. 12시간 변화율 필터는 쓰지 않음. 재생 모의(10h×3구간, 슬리피지 0.07~0.15%): 쌍 합계 +76.6(+22.6/+25.0/+29.0), 최악 낙폭 −53, 청산 88건. 간격을 0.5%·0.3%로 촘촘히 하면 +5/−4로 나빠짐. ⚠️ 모의에는 펀딩·급변 슬리피지 미반영, CAP은 이틀 전 −24% 폭락 이력. 실전은 기본 상태 파일(coin_grid_cap_state.json / coin_grid_short_cap_state.json)과 로그(logs/coin_grid_cap.log / logs/coin_grid_short_cap.log)를 써서 엑셀·24시간 분석에 자동 반영됨. 모의 검증은 몇 분뿐이었음(사용자 판단으로 즉시 투입).",
+  "cfg": {
+    "step_pct": 1.0,
+    "sell_step_pct": 1.0,
+    "order_usdt": 50,
+    "sell_order_usdt": 50,
+    "max_total_usdt": 300,
+    "leverage": 1,
+    "sell_min_profit_pct": 0,
+    "entry_spacing": false,
+    "ref_mode": "sma",
+    "ref_sma_min": 5,
+    "surge_mode": true,
+    "surge_chase_usdt": 100,
+    "trail_exit_pct": 15.0,
+    "trail_action": "liquidate",
+    "trail_rest_min": 120,
+    "trend_filter": false,
+    "trend_up_block": false,
+    "paper": false
+  }
+}
