@@ -39,7 +39,7 @@ CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
                ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0), ("deep_rebound_pct", 0.0), ("deep_from_stage", 3), ("trend_hold", False), ("trend_window_min", 30), ("trend_gain_pct", 3.0),
-               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("entry_ref_min", 0), ("max_entry_stage", 0), ("hedge_follow_usdt", 0.0), ("hedge_opp_stage", 3), ("hedge_max_usdt", 500.0), ("hedge_step_pct", 1.0), ("entry_min_gap_min", 0), ("entry_gap_fast_pct", 0.0), ("entry_ref_mix", 0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
+               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("entry_ref_min", 0), ("max_entry_stage", 0), ("hedge_follow_usdt", 0.0), ("hedge_opp_stage", 3), ("hedge_max_usdt", 500.0), ("hedge_step_pct", 1.0), ("entry_min_gap_min", 0), ("exit_usdt", 0.0), ("counter_trend_pct", 0.0), ("counter_stage_cap", 0), ("entry_gap_fast_pct", 0.0), ("entry_ref_mix", 0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -206,7 +206,15 @@ def step(state, price, now, order_fn, log, notify=None):
         adverse = ((1 - price / max(w30)) if L else (price / min(w30) - 1)) * 100 if w30 else 0.0
         if not fastv or adverse >= fastv:
             gap_ok = now - st.get("last_in_ts", 0) >= float(CFG["entry_min_gap_min"]) * 60
+    # 역추세 쪽 신규 진입 제한(모의): 진입 기준 시세(N분 평균) 대비 이쪽에 불리한 방향으로 counter_trend_pct% 이상 벌어진 동안은 사다리를 counter_stage_cap단계까지만 허용
+    if float(CFG.get("counter_trend_pct") or 0) > 0 and erm and ent_base_ok and base_entry > 0:
+        adv = ((base_entry - price) if L else (price - base_entry)) / base_entry * 100
+        if adv >= float(CFG["counter_trend_pct"]) and st["bs"] >= int(CFG.get("counter_stage_cap") or 0):
+            can_in = False
     mes = int(CFG.get("max_entry_stage") or 0)          # >0이면 진입 사다리를 이 단계까지만 허용(그 이상은 진입 막고, 그 단계가 차면 '다 참'으로 보고 손절 3구간을 켠다)
+    if st["qty"] > 1e-12 and not st.get("full") and (st["bs"] >= (min(nst, mes) if mes else nst) or st["hold"] + u > cap):
+        st.update(full=True, q_at_full=st["qty"], avg_at_full=st["avg"])        # 사다리가 다 찼거나 한도 때문에 더 못 사는 상태 → 손절 3구간을 켠다(진입 시점이 아니어도, 수동 편입으로 그 상태가 된 경우 포함)
+        log(f"  📌 사다리 완료(한도·단계) — 평균단가 {st['avg']:,.6g}, 손절선 " + " / ".join(f"{(st['avg'] * (1 - x / 100) if L else st['avg'] * (1 + x / 100)):,.6g}" for x in stops))
     if can_in and not moved and st["bs"] < (min(nst, mes) if mes else nst) and st["hold"] + u <= cap and st["stopped"] == 0 and now >= st.get("derisk_block_until", 0) and gap_ok:
         if do_in(u, f"사다리 {st['bs'] + 1}단계"):
             st["bs"] += 1; st["ss"] = 0; st["last_in_ts"] = now
@@ -220,7 +228,7 @@ def step(state, price, now, order_fn, log, notify=None):
             qq = (st["ss_base"] if CFG.get("sell_pct_of", "start") == "start" else st["qty"]) * CFG["sell_pct"] / 100
             if st["ss"] >= nst - 1 or qq * price < 6 or st["qty"] - qq < qq * 0.5: qq = st["qty"]
         else:
-            qq = u / price
+            qq = (float(CFG.get("exit_usdt") or 0) or u) / price           # 청산 크기(exit_usdt, 기본은 사다리 크기 ladder_usdt)
             if st["qty"] - qq < qq * 0.5: qq = st["qty"]
         keep = keep_eff
         if keep > 0:        # 보유 금액이 keep_usdt 이하면 청산하지 않고, 초과분만 청산한다 (2026-10-27 사용자 지시)
