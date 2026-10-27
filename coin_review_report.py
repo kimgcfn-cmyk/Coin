@@ -148,9 +148,9 @@ def main():
         icon = {"유지": "🟢", "주의": "🟡", "조정 검토": "🔴"}[verdict]
         pct = lambda v: f"{v / capital * 100:+.1f}%" if capital else "-"
         lines.append(f"{icon} <b>{tag} 롱숏합동</b> [{verdict}] · 현재가 {price:,.6g} · 시장 {kind} · 기준 자본 {capital:,.0f}USDT")
-        lines.append(f"   12h 실현 {r12:+.2f} ({c12}회) → 총 {t12:+.2f} ({pct(t12)}) / MDD {m12 / capital * 100 if capital else 0:.1f}%"
+        lines.append(f"   [봇 체결 기준] 12h 실현 {r12:+.2f} ({c12}회) → 총 {t12:+.2f} ({pct(t12)}) / MDD {m12 / capital * 100 if capital else 0:.1f}%"
                      f"  |  24h 실현 {r24:+.2f} ({c24}회) → 총 {t24:+.2f} ({pct(t24)}) / MDD {m24 / capital * 100 if capital else 0:.1f}%")
-        lines.append(f"   가동 이후 총 {total_all:+.2f} ({pct(total_all)}) · 평균 보유 {hh:.1f}시간 · 순노출 {net_exp:+,.0f}USDT")
+        lines.append(f"   [장부 누적] 가동 이후 총 {total_all:+.2f} ({pct(total_all)}) — 수동 거래 정정 손익 포함 · 평균 보유 {hh:.1f}시간 · 순노출 {net_exp:+,.0f}USDT")
         for side, nm in (("long", "롱"), ("short", "숏")):
             p = part[side]
             lines.append(f"   └ {nm}: 보유 {p['qty']:,.0f}개 ({p['hold']:,.0f}USDT) 평균 {p['avg']:,.6g} · 평가 {p['unreal']:+.2f} · 누적 {p['cum']:+.2f} · 사다리 {p['bs']}단계{' · 손절선 활성' if p['full'] else ''}")
@@ -162,7 +162,7 @@ def main():
     except Exception:
         pass
     if flagged: lines.append(f"👉 점검 필요: {', '.join(flagged)} — 한도·설정 조정을 검토하세요(자동 변경 없음)")
-    lines.append("※ 누적수익률=총 순손익÷기준 자본, MDD=고점 대비 최대 낙폭(체결 사이 평가손실은 미반영). 통과 기준 MDD≤30%. 과거 결과일 뿐 투자 조언이 아닙니다.")
+    lines.append("※ 12h·24h는 봇 자체 체결의 청산 순손익 기준이고(수동 거래로 장부를 정정한 손익은 제외), '장부 누적'은 그 정정 손익까지 포함한 가동 이후 값입니다. 누적수익률=총 순손익÷기준 자본, MDD=고점 대비 최대 낙폭(체결 사이 평가손실은 미반영), 통과 기준 MDD≤30%. 과거 결과일 뿐 투자 조언이 아닙니다.")
     msg = "\n".join(lines)
     if send: g.send_discord(msg); print("  ✅ 리포트 전송 완료")
     print(msg.replace("<b>", "").replace("</b>", ""))
