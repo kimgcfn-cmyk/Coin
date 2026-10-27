@@ -33,7 +33,7 @@ CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
                ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0), ("deep_rebound_pct", 0.0), ("deep_from_stage", 3), ("trend_hold", False), ("trend_window_min", 30), ("trend_gain_pct", 3.0),
-               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
+               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -45,6 +45,9 @@ def step(state, price, now, order_fn, log, notify=None):
     word_in, word_out = ("매수", "매도") if L else ("숏 진입", "환매")
     nst = 1 + int(CFG["ladder_extra"]); u = float(CFG["ladder_usdt"]); stops = list(CFG.get("stops") or [])
     cap = float(CFG["max_total_usdt"])
+    keep_eff = float(CFG.get("keep_usdt") or 0)                  # 반대쪽 사다리가 relax_opp_stage단계 이상이면 최소 보유를 relax_keep_usdt로 낮춰 이익을 청산한다
+    if CFG.get("relax_opp_stage") and int(CFG.get("opp_bs") or 0) >= int(CFG["relax_opp_stage"]):
+        keep_eff = float(CFG.get("relax_keep_usdt") or 0)
     st = state
     for k_, v_ in (("qty", 0.0), ("avg", 0.0), ("hold", 0.0), ("bs", 0), ("ss", 0), ("stopped", 0), ("full", False), ("q_at_full", 0.0),
                    ("avg_at_full", 0.0), ("want_re", False), ("cum_pnl", 0.0), ("cum_fees", 0.0)):
@@ -160,8 +163,8 @@ def step(state, price, now, order_fn, log, notify=None):
             if st["bs"] >= nst or st["hold"] + u > cap:
                 st.update(full=True, q_at_full=st["qty"], avg_at_full=st["avg"])
                 log(f"  📌 사다리 완료 — 평균단가 {st['avg']:,.6g}, 손절선 " + " / ".join(f"{(st['avg'] * (1 - s / 100) if L else st['avg'] * (1 + s / 100)):,.6g}" for s in stops))
-    elif can_out and st["qty"] > 1e-12 and st["ss"] < nst and ((price >= st["avg"]) if L else (price <= st["avg"])) and not (st.get("trend") and st["ss"] >= int(CFG["trend_sell_stages"])) and st["hold"] > float(CFG.get("keep_usdt") or 0) + 1e-9 and \
-            (st["qty"] * (st["hold"] - float(CFG.get("keep_usdt") or 0)) / st["hold"]) * price >= 6:
+    elif can_out and st["qty"] > 1e-12 and st["ss"] < nst and ((price >= st["avg"]) if L else (price <= st["avg"])) and not (st.get("trend") and st["ss"] >= int(CFG["trend_sell_stages"])) and st["hold"] > keep_eff + 1e-9 and \
+            (st["qty"] * (st["hold"] - keep_eff) / st["hold"]) * price >= 6:
         if CFG.get("sell_pct"):        # 보유물량의 sell_pct% 매도: start=이번 청산 사다리 시작 때 물량 기준(5단계×20%=전량), current=그때그때 남은 물량 기준
             if st["ss"] == 0 or not st.get("ss_base"): st["ss_base"] = st["qty"]
             qq = (st["ss_base"] if CFG.get("sell_pct_of", "start") == "start" else st["qty"]) * CFG["sell_pct"] / 100
@@ -169,7 +172,7 @@ def step(state, price, now, order_fn, log, notify=None):
         else:
             qq = u / price
             if st["qty"] - qq < qq * 0.5: qq = st["qty"]
-        keep = float(CFG.get("keep_usdt") or 0)
+        keep = keep_eff
         if keep > 0:        # 보유 금액이 keep_usdt 이하면 청산하지 않고, 초과분만 청산한다 (2026-10-27 사용자 지시)
             qq = min(qq, st["qty"] * (st["hold"] - keep) / st["hold"])
         if do_out(qq, f"청산 {st['ss'] + 1}단계"):
@@ -180,8 +183,8 @@ def step(state, price, now, order_fn, log, notify=None):
     elif not ev:
         pos = f"보유 {st['qty']:.4f}개 평균 {st['avg']:,.6g} ({(price / st['avg'] - 1) * 100 * (1 if L else -1):+.2f}%) {st['hold']:.0f}USDT 진입단계 {st['bs']} 청산단계 {st['ss']}" if st["qty"] > 1e-12 else \
               ("재투입 대기" if st["want_re"] else "보유 없음")
-        if st["qty"] > 1e-12 and can_out and ((price >= st["avg"]) if L else (price <= st["avg"])) and st["hold"] <= float(CFG.get("keep_usdt") or 0) + 1e-9:
-            pos += f" | 청산선 도달했지만 보유 {st['hold']:.0f}USDT ≤ 유지 {CFG['keep_usdt']:.0f}USDT라 청산 보류"
+        if st["qty"] > 1e-12 and can_out and ((price >= st["avg"]) if L else (price <= st["avg"])) and st["hold"] <= keep_eff + 1e-9:
+            pos += f" | 청산선 도달했지만 보유 {st['hold']:.0f}USDT ≤ 유지 {keep_eff:.0f}USDT라 청산 보류"
         log(f"  대기 — {pos} | 기준 {base:,.6g} 진입선 {ent_lv:,.6g} 청산선 {ext_lv:,.6g}" + (" | 급변 중(신규 진입 중단)" if moved else ""))
     return ev
 
