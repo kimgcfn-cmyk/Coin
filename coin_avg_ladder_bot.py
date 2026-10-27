@@ -216,6 +216,8 @@ def step(state, price, now, order_fn, log, notify=None):
     if st["qty"] > 1e-12 and not st.get("full") and (st["bs"] >= (min(nst, mes) if mes else nst) or st["hold"] + u > cap):
         st.update(full=True, q_at_full=st["qty"], avg_at_full=st["avg"])        # 사다리가 다 찼거나 한도 때문에 더 못 사는 상태 → 손절 3구간을 켠다(진입 시점이 아니어도, 수동 편입으로 그 상태가 된 경우 포함)
         log(f"  📌 사다리 완료(한도·단계) — 평균단가 {st['avg']:,.6g}, 손절선 " + " / ".join(f"{(st['avg'] * (1 - x / 100) if L else st['avg'] * (1 + x / 100)):,.6g}" for x in stops))
+    elif st.get("full") and st["stopped"] == 0 and st["qty"] > 1e-12 and st["bs"] < (min(nst, mes) if mes else nst) and st["hold"] + u <= cap:
+        st["full"] = False; log("  ℹ️ 한도·단계에 여유가 생겨 사다리 완료 표시와 손절선을 해제합니다")      # 한도를 늘리거나 보유가 줄어 다시 진입할 수 있게 된 경우
     if can_in and not moved and st["bs"] < (min(nst, mes) if mes else nst) and st["hold"] + u <= cap and st["stopped"] == 0 and now >= st.get("derisk_block_until", 0) and gap_ok:
         if do_in(u, f"사다리 {st['bs'] + 1}단계"):
             st["bs"] += 1; st["ss"] = 0; st["last_in_ts"] = now
