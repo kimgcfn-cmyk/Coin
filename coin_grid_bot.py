@@ -130,6 +130,11 @@ CFG = {
     "trend_up_block"  : False,             # (숏 봇) True면 12시간 변화율이 +trend_pct% 이상인 상승 추세에서 신규 숏 진입·급락 추격 숏을 막는다(보유 숏의 환매·손절은 그대로, 2026-10-26)
     "trend_hedge_usdt": 0.0,               # (숏 봇) 하락 추세에서 채울 숏 목표 규모(명목 USDT). 0이면 환매 중지 없이 필터만 표시
     "auto_trade"      : False,             # 기본은 모의(paper). 실전은 --live 로 켠다
+    "pair_tp_frac"    : 0.0,               # 쌍 수익 실현(2026-10-27): 손절·사다리 청산이 나갈 때 같은 종목 반대 방향 봇 물량에서 (손절된 비중 × 이 값)만큼 수익 실현. 0=끔. 예: 0.5 → 사다리 1/3 단계면 반대 수량의 1/6, 전량 손절이면 1/2
+    "pair_partner_state": "",              # 반대 방향 봇의 상태 파일 / 잠금 파일 / 방향("long"|"short") / 로그 파일
+    "pair_partner_lock": "",
+    "pair_partner_side": "",
+    "pair_partner_log": "",
     "state_file"      : "",
 }
 
@@ -542,6 +547,60 @@ def surge_volume_ratio():
         print(f"  ⚠️ 거래량 조회 실패: {e}")
         return None
 
+def pair_take_profit(frac_stopped: float, price: float, send: bool, why: str) -> str:
+    """쌍 수익 실현(2026-10-27 사용자 요청): 이 봇이 손절·사다리 청산을 할 때, 같은 종목의 반대 방향 봇 물량에서 (손절된 비중 × pair_tp_frac)만큼 수익을 실현한다.
+    · 반대 포지션이 수익 구간일 때만(롱은 평균 매수가 +0.1% 이상, 숏은 평균 진입가 −0.1% 이하). 손실 구간이거나 최소 주문금액(약 6USDT) 미만이면 건너뛴다.
+    · 반대 봇 장부(상태 파일)를 직접 고치므로 그 봇의 잠금 파일을 잡은 동안에만 처리한다(최대 25초 대기, 못 잡으면 건너뜀). 로그에는 반대 봇 로그 파일에 남겨 엑셀·분석이 그 봇 체결로 읽게 한다.
+    반환: 알림에 덧붙일 문장(비어 있으면 아무 일도 없음)."""
+    pf = CFG.get("pair_tp_frac") or 0.0; pst = CFG.get("pair_partner_state"); side = CFG.get("pair_partner_side")
+    if not (pf > 0 and pst and side in ("long", "short") and frac_stopped > 0):
+        return ""
+    import fcntl
+    lf = None; got = False
+    try:
+        if CFG.get("pair_partner_lock"):
+            lf = open(CFG["pair_partner_lock"], "a")
+            for _ in range(25):
+                try: fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB); got = True; break
+                except BlockingIOError: time.sleep(1.0)
+            if not got:
+                msg = "↔ 쌍 수익 실현 건너뜀 — 반대 봇이 실행 중이라 잠금을 못 잡음"; print("  " + msg); return "\n" + msg
+        try: ps = json.load(open(pst, encoding="utf-8"))
+        except Exception as e:
+            msg = f"↔ 쌍 수익 실현 건너뜀 — 반대 봇 장부를 읽지 못함({type(e).__name__})"; print("  " + msg); return "\n" + msg
+        qty = float(ps.get("qty") or 0.0); avg = ps.get("avg_cost") or 0.0
+        if qty <= 0 or not avg:
+            msg = "↔ 쌍 수익 실현 없음 — 반대 포지션이 없음"; print("  " + msg); return "\n" + msg
+        profit = (price >= avg * 1.001) if side == "long" else (price <= avg * 0.999)
+        if not profit:
+            msg = f"↔ 쌍 수익 실현 건너뜀 — 반대 {'롱' if side == 'long' else '숏'}이 수익 구간이 아님(평균 {avg:,.6g}, 현재가 {price:,.6g})"; print("  " + msg); return "\n" + msg
+        q = qty * min(1.0, frac_stopped) * pf
+        if q * price < 6:
+            msg = f"↔ 쌍 수익 실현 건너뜀 — 크기가 최소 주문금액 미만({q * price:.1f}USDT)"; print("  " + msg); return "\n" + msg
+        ok, detail, qq, info = place_order(CFG["symbol"], "sell" if side == "long" else "buy", 0, price, reduce_only=True, dry_run=not send, qty_override=q)
+        if not ok:
+            msg = f"↔ 쌍 수익 실현 실패: {detail}"; print("  ❌ " + msg); return "\n" + msg
+        aq = info.get("filled_qty", q); fp = info.get("avg_price", price); fee = _fee_of(info.get("fee"), aq, fp)
+        pnl = aq * ((fp - avg) if side == "long" else (avg - fp)) - fee
+        if send:
+            ps["cum_pnl"] = ps.get("cum_pnl", 0.0) + pnl; ps["cum_fees"] = ps.get("cum_fees", 0.0) + fee
+            new = max(0.0, qty - aq); ps["holdings_usdt"] = 0.0 if new <= 1e-9 else ps.get("holdings_usdt", 0.0) * (new / qty); ps["qty"] = new
+            with open(pst, "w", encoding="utf-8") as f_: json.dump(ps, f_, ensure_ascii=False, indent=2)
+            if CFG.get("pair_partner_log"):
+                try:
+                    with open(CFG["pair_partner_log"], "a", encoding="utf-8") as lg:
+                        lg.write(f"\n  [쌍 수익 실현] {CFG['symbol']} — {datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC\n  {'🔴 매도' if side == 'long' else '🔺 환매'}(쌍 수익 실현): {detail}\n")
+                except Exception: pass
+        msg = (f"↔ 쌍 수익 실현({why}, 손절 비중 {frac_stopped:.0%} × {pf:.0%}): 반대 {'롱' if side == 'long' else '숏'} {aq:.6g}개를 {fp:,.6g}에 정리, 실현 {pnl:+.2f} USDT (남은 {max(0.0, qty - aq):.6g}개)")
+        print("  💱 " + msg + f" | {detail}"); return "\n" + msg
+    except Exception as e:
+        msg = f"↔ 쌍 수익 실현 오류 무시: {type(e).__name__}: {e}"; print("  " + msg); return "\n" + msg
+    finally:
+        if lf is not None:
+            try:
+                if got: fcntl.flock(lf, fcntl.LOCK_UN)
+            finally: lf.close()
+
 def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
     """매 사이클 호출. 급등 모드가 이번 사이클을 처리했으면 True(그리드·고점 로직 건너뜀).
     - 감지: 최근 surge_window_min분 안의 최저가 대비 현재가가 surge_pct% 이상 올라 있으면 시작
@@ -663,9 +722,10 @@ def surge_step(state: dict, price: float, send: bool, now: str) -> bool:
         state["holdings_usdt"] = 0.0 if state["qty"] <= 1e-9 else state.get("holdings_usdt", 0.0) * (state["qty"] / have)
         k += 1
         sold_total += aq
+        tp_note = pair_take_profit(min(1.0, aq / base) if base else 1.0, price, send, f"급등 분할 {k}/{len(ladder)}")
         m = (f"📉 <b>{CFG['symbol']} 급등 분할 매도 {k}/{len(ladder)}</b>\n📈 급등 고점 {peak:,.4f} → {price:,.4f} ({(price/peak-1)*100:.1f}%)\n"
              f"💵 체결가: {fp:,.4f} USDT\n📦 수량: {aq:.6f}개 (남은 봇 물량 {state['qty']:.6f}개)\n"
-             f"💸 직전 기준가 대비(수수료 제외): {aq * (fp - ref_before):+,.2f} USDT\n{detail}")
+             f"💸 직전 기준가 대비(수수료 제외): {aq * (fp - ref_before):+,.2f} USDT\n{detail}{tp_note}")
         msgs.append(m)
         print(f"  📉 급등 분할 매도 {k}/{len(ladder)}: {detail}")
         if send:
@@ -917,6 +977,7 @@ def run_check(send: bool = True):
             ref_before = state.get("reference_price") or price
             if aq > 0:
                 _acct_sell(state, aq, fp, info.get("fee"))
+            tp_note = pair_take_profit(1.0, price, send, "고점 청산") if aq > 0 else ""
             pnl = aq * (fp - ref_before)
             rest_min = CFG.get("trail_rest_min") or 0
             state.update({"qty": max(0.0, have - aq), "holdings_usdt": 0.0})
@@ -929,6 +990,7 @@ def run_check(send: bool = True):
                    f"💵 체결가: {fp:,.4f} USDT\n📦 청산 수량: {aq:.6f}개\n"
                    f"💸 직전 기준가 대비 손익(수수료 제외): {pnl:+,.2f} USDT\n{detail}\n"
                    + (f"{rest_min}분 뒤 기준가·고점을 현재가로 새로 잡고 자동 재개합니다." if rest_min else "봇은 정지되었습니다. 재개: python coin_grid_bot.py --resume"))
+            msg += tp_note
             msg += _pnl_footer(state, price)
             print(f"  🚨 청산 완료: {detail}")
             if send and have > 0:

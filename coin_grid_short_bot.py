@@ -111,10 +111,11 @@ def run_check(send=True):
         ok, detail, q, info = _cover_order(price, 0, send, qty=qty)
         if ok:
             aq = info.get("filled_qty", qty); fp = info.get("avg_price", price)
+            tp_note_ = g.pair_take_profit(1.0, price, send, "강제 손절") if aq > 0 else ""
             _cover(state, aq, fp, info.get("fee")); state.update(qty=max(0.0, qty - aq), holdings_usdt=0.0, halted=True,
                 halted_reason=f"평균 진입가 {state['avg_cost']:,.6g} 대비 +{stop:g}% 손절 ({now})")
             print(f"  🛑 강제 손절 환매: {detail}")
-            _send(_msg(state, f"🛑 <b>{CFG['symbol']} 숏 강제 손절 후 정지</b>\n평균 진입가 {state['avg_cost']:,.6g} → 현재가 {price:,.6g} (+{(price/state['avg_cost']-1)*100:.1f}%)\n📦 환매 {aq:.6f}개 @ {fp:,.6g}\n{detail}\n봇은 정지되었습니다. 재개: coin_grid_short_bot.py --symbol … --resume", price), send)
+            _send(_msg(state, f"🛑 <b>{CFG['symbol']} 숏 강제 손절 후 정지</b>\n평균 진입가 {state['avg_cost']:,.6g} → 현재가 {price:,.6g} (+{(price/state['avg_cost']-1)*100:.1f}%)\n📦 환매 {aq:.6f}개 @ {fp:,.6g}\n{detail}{tp_note_}\n봇은 정지되었습니다. 재개: coin_grid_short_bot.py --symbol … --resume", price), send)
         else:
             print(f"  ❌ 손절 환매 실패: {detail}")
             if g.no_position_error(detail):
@@ -277,7 +278,8 @@ def run_check(send=True):
                 _cover(state, aq, fp, info.get("fee")); state["qty"] = max(0.0, have - aq)
                 state["holdings_usdt"] = 0.0 if state["qty"] <= 1e-9 else state.get("holdings_usdt", 0.0) * (state["qty"] / have)
                 k += 1; sold = True
-                msgs.append(f"📈 <b>{CFG['symbol']} 숏 분할 환매 {k}/{len(ladder)}</b>\n📉 급락 저점 {low:,.6g} → {price:,.6g} (+{(price/low-1)*100:.1f}%)\n💵 체결가 {fp:,.6g} / 📦 {aq:.6f}개 (남은 숏 {state['qty']:.6f}개)\n💸 진입 평균가 대비(수수료 제외): {aq * ((state.get('avg_cost') or fp) - fp):+,.2f} USDT\n{detail}")
+                tp_note_ = g.pair_take_profit(min(1.0, aq / base) if base else 1.0, price, send, f"숏 분할 환매 {k}/{len(ladder)}")
+                msgs.append(f"📈 <b>{CFG['symbol']} 숏 분할 환매 {k}/{len(ladder)}</b>\n📉 급락 저점 {low:,.6g} → {price:,.6g} (+{(price/low-1)*100:.1f}%)\n💵 체결가 {fp:,.6g} / 📦 {aq:.6f}개 (남은 숏 {state['qty']:.6f}개)\n💸 진입 평균가 대비(수수료 제외): {aq * ((state.get('avg_cost') or fp) - fp):+,.2f} USDT\n{detail}{tp_note_}")
                 print(f"  📈 숏 분할 환매 {k}/{len(ladder)}: {detail}")
             state["crash_k"] = k; done = k >= len(ladder) or state.get("qty", 0.0) <= 0
             if msgs:
