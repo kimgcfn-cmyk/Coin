@@ -36,6 +36,13 @@ CFG.setdefault("rally_fast_win_min", 1)
 CFG.setdefault("entry_spacing", False)       # True면 추가 숏은 직전 진입가에서 step_pct% 더 올랐을 때만 (평균가 기준에서 매분 연속 진입되는 것 방지, 2026-10-26)
 CFG.setdefault("ref_mode", "sma")           # 기준가 방식: "sma"=직전 ref_sma_min분 평균가(매분 갱신, 2026-10-26부터 숏 봇 기본전략), "last"=마지막 체결가(이전 방식)
 CFG.setdefault("ref_sma_min", 5)             # sma 모드의 평균 구간(분, 최대 14 — 시세 기록이 15분만 남음)
+CFG.setdefault("trend_entry", False)             # 추세 숏 진입(2026-10-27): 짧은 이동평균이 긴 이동평균을 아래로 뚫는 데드크로스(+느린 선 하락)가 나오면 숏 te_usdt를 연다. 하락 중에는 기준가가 따라 내려와 그리드 숏 진입이 안 나오는 문제를 보완. 환매·손절은 기존 숏 그리드 규칙 그대로
+CFG.setdefault("te_bar_min", 5)                 # 신호용 봉(분)
+CFG.setdefault("te_fast", 3)                    # 빠른 이동평균 봉 수
+CFG.setdefault("te_slow", 12)                   # 느린 이동평균 봉 수
+CFG.setdefault("te_confirm", 0)                 # 교차 후 같은 쪽에 더 머물러야 하는 봉 수(0=교차 직후)
+CFG.setdefault("te_slope_bars", 3)              # 느린 선 기울기를 재는 봉 수
+CFG.setdefault("te_usdt", 50.0)                 # 추세 진입 1회 크기(명목 USDT, 한도 안에서)
 CFG.setdefault("trend_ladder", [])               # 하락 추세 모드의 반등 사다리: 저점 대비 +N%마다 보유 물량(사다리 시작 시점)의 1/단계수씩 환매. 예: [1,2,3,4,5] (비우면 끔, 2026-10-26)
 CFG.setdefault("trend_ladder_confirm", 3)       # 각 단계선 위에 이 횟수(분)만큼 연속으로 머물러야 환매
 CFG.setdefault("cover_min_profit_pct", 0.0)  # 그리드 환매는 현재가가 평균 진입가보다 이 %만큼 낮을 때만 (0/None=끔, 기본 끔). 급락 모드 단계 환매·강제 손절에는 적용 안 함
@@ -116,6 +123,33 @@ def run_check(send=True):
                 _send(f"❌ <b>{CFG['symbol']} 숏 손절 환매 실패</b>\n{detail}\n다음 점검에서 재시도됩니다", send); state["fail_notified"] = True
         if send: g.save_state(state)
         return
+
+    # ①-c 추세 숏 진입(데드크로스, 기본 꺼짐): 새 봉이 마감될 때 한 번만 판단. 켠 직후의 첫 봉은 기록만 하고 거래하지 않는다.
+    if CFG.get("trend_entry") and not (state.get("rally_on") or state.get("buy_paused")):
+        try:
+            from coin_ma_bot import signal as _ma_signal
+            tf = f"{CFG['te_bar_min']}m"; need = CFG["te_slow"] + CFG["te_slope_bars"] + CFG["te_confirm"] + 6
+            rows_ = g.get_exchange().fetch_ohlcv(CFG["symbol"], tf, limit=need)[:-1]      # 마지막 봉은 진행 중 → 제외
+            bar_ts = rows_[-1][0] if rows_ else None
+            if bar_ts is not None and state.get("te_bar_ts") is None:
+                state["te_bar_ts"] = bar_ts
+            elif bar_ts is not None and bar_ts > state.get("te_bar_ts", 0):
+                state["te_bar_ts"] = bar_ts
+                sg = _ma_signal([r_[4] for r_ in rows_], CFG["te_fast"], CFG["te_slow"], CFG["te_slope_bars"], CFG["te_confirm"])
+                if sg and sg["cross"] == "down" and sg["slope_pct"] < 0 and state.get("holdings_usdt", 0.0) + CFG["te_usdt"] <= CFG["max_total_usdt"]:
+                    ok, detail, q, info = _short_order(price, CFG["te_usdt"], send)
+                    if ok:
+                        aq = info.get("filled_qty", q); _open(state, aq, info.get("avg_price", price), info.get("fee"))
+                        state["qty"] = state.get("qty", 0.0) + aq; state["holdings_usdt"] = state.get("holdings_usdt", 0.0) + CFG["te_usdt"]; state["last_entry_price"] = price
+                        print(f"  📉 추세 숏 진입(데드크로스 {tf} {CFG['te_fast']}/{CFG['te_slow']}, 느린선 기울기 {sg['slope_pct']:+.3f}%): {detail}")
+                        if send:
+                            g.save_state(state)
+                            _send(_msg(state, f"📉 <b>{CFG['symbol']} 추세 숏 진입</b> (데드크로스 {tf} {CFG['te_fast']}/{CFG['te_slow']})\n💰 금액: {info.get('cost', 0):,.2f} USDT\n💵 체결가: {info.get('avg_price', price):,.6g}\n📦 수량: {aq:.6f}개", price), send)
+                        return
+                    else:
+                        print(f"  ❌ 추세 숏 진입 실패: {detail}")
+        except Exception as e_:
+            print(f"  (추세 숏 진입 점검 오류 무시: {type(e_).__name__}: {e_})")
 
     # ①-b 12시간 하락 추세 필터(2026-10-26): 하락 추세면 숏을 trend_hedge_usdt까지 시장가로 채우고 그리드 환매·급락 모드를 쉬며 들고 간다
     if CFG.get("trend_filter"):
