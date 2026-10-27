@@ -39,7 +39,7 @@ CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
                ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0), ("deep_rebound_pct", 0.0), ("deep_from_stage", 3), ("trend_hold", False), ("trend_window_min", 30), ("trend_gain_pct", 3.0),
-               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("entry_ref_min", 0), ("max_entry_stage", 0), ("hedge_follow_usdt", 0.0), ("hedge_opp_stage", 3), ("hedge_max_usdt", 500.0), ("hedge_step_pct", 1.0), ("entry_min_gap_min", 0), ("exit_usdt", 0.0), ("counter_trend_pct", 0.0), ("counter_stage_cap", 0), ("entry_gap_fast_pct", 0.0), ("entry_ref_mix", 0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
+               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("entry_ref_min", 0), ("max_entry_stage", 0), ("hedge_follow_usdt", 0.0), ("hedge_opp_stage", 3), ("hedge_max_usdt", 500.0), ("hedge_step_pct", 1.0), ("entry_min_gap_min", 0), ("exit_usdt", 0.0), ("acct_max_ratio", 0.0), ("_acct_block", False), ("counter_trend_pct", 0.0), ("counter_stage_cap", 0), ("entry_gap_fast_pct", 0.0), ("entry_ref_mix", 0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -51,6 +51,7 @@ def step(state, price, now, order_fn, log, notify=None):
     word_in, word_out = ("매수", "매도") if L else ("숏 진입", "환매")
     nst = 1 + int(CFG["ladder_extra"]); u = float(CFG["ladder_usdt"]); stops = list(CFG.get("stops") or [])
     cap = float(CFG["max_total_usdt"])
+    blocked = bool(CFG.get("_acct_block"))                    # 계좌 단위 총 명목 상한 초과 시 신규 진입(첫 진입·재투입·헤지·사다리)만 중단, 청산·손절은 그대로
     keep_eff = float(CFG.get("keep_usdt") or 0)                  # 반대쪽 사다리가 relax_opp_stage단계 이상이면 최소 보유를 relax_keep_usdt로 낮춰 이익을 청산한다
     if CFG.get("relax_opp_stage") and int(CFG.get("opp_bs") or 0) >= int(CFG["relax_opp_stage"]):
         keep_eff = float(CFG.get("relax_keep_usdt") or 0)
@@ -104,7 +105,7 @@ def step(state, price, now, order_fn, log, notify=None):
         if notify: notify(f"{'🟢' if net > 0 else '🔴'} <b>{CFG['symbol']} {word_out}</b> ({why})\n순손익 {net:+.2f} USDT · 누적 {st['cum_pnl']:+.2f}")
         return True
 
-    if not st.get("started") and st["qty"] <= 1e-12 and CFG.get("first_entry_usdt"):      # 첫 진입: 롱·숏 모두 시작하자마자 같이 first_entry_usdt 진입 (2026-10-27 사용자 지시)
+    if not st.get("started") and st["qty"] <= 1e-12 and CFG.get("first_entry_usdt") and not blocked:      # 첫 진입: 롱·숏 모두 시작하자마자 같이 first_entry_usdt 진입 (2026-10-27 사용자 지시)
         if do_in(float(CFG["first_entry_usdt"]), "첫 진입"):
             st.update(started=True, bs=0, ss=0, full=False, stopped=0)
         return ev
@@ -156,14 +157,14 @@ def step(state, price, now, order_fn, log, notify=None):
         if int(CFG.get("opp_bs") or 0) >= int(CFG["hedge_opp_stage"]):
             if not st.get("hedge_ref"): st["hedge_ref"] = price
             gain = (price / st["hedge_ref"] - 1) * (1 if L else -1) * 100
-            if gain >= float(CFG["hedge_step_pct"]) and not moved and st["hold"] + float(CFG["hedge_follow_usdt"]) <= min(cap, float(CFG["hedge_max_usdt"])):
+            if gain >= float(CFG["hedge_step_pct"]) and not moved and not blocked and st["hold"] + float(CFG["hedge_follow_usdt"]) <= min(cap, float(CFG["hedge_max_usdt"])):
                 if do_in(float(CFG["hedge_follow_usdt"]), "헤지 보강"):
                     st["hedge_ref"] = price
                 return ev
         else:
             st.pop("hedge_ref", None)
     # ① 수익실현으로 비었으면 재투입
-    if st["want_re"] and st["qty"] <= 1e-12 and not moved and (not CFG["reinvest_cond"] or ((price < ref) if L else (price > ref))):
+    if st["want_re"] and st["qty"] <= 1e-12 and not moved and not blocked and (not CFG["reinvest_cond"] or ((price < ref) if L else (price > ref))):
         if do_in(float(CFG["reinvest_usdt"]), "재투입"):
             st.update(bs=0, ss=0, want_re=False, full=False, stopped=0, n_re=st.get("n_re", 0) + 1)
         return ev
@@ -193,7 +194,7 @@ def step(state, price, now, order_fn, log, notify=None):
         eref = (min(st["avg"], base_entry) if L else max(st["avg"], base_entry)) if mixm == 1 else (max(st["avg"], base_entry) if L else min(st["avg"], base_entry))
     ent_lv = eref * (1 - (eb + CFG["ladder_step_pct"] * st["bs"]) / 100) if L else eref * (1 + (eb + CFG["ladder_step_pct"] * st["bs"]) / 100)
     ext_lv = base * (1 + (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["ss"]) / 100) if L else base * (1 - (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["ss"]) / 100)
-    can_in = ((price <= ent_lv) if L else (price >= ent_lv)) and ent_base_ok
+    can_in = ((price <= ent_lv) if L else (price >= ent_lv)) and ent_base_ok and not blocked
     can_out = (price >= ext_lv) if L else (price <= ext_lv)
     dr = float(CFG.get("deep_rebound_pct") or 0)
     if dr and can_in and st["qty"] > 1e-12 and st["bs"] + 1 >= int(CFG.get("deep_from_stage", 3)):      # 깊은 단계는 직전 crash_window_min분 저점(롱)/고점(숏)에서 dr% 되돌린 뒤에만 진입
@@ -247,6 +248,24 @@ def step(state, price, now, order_fn, log, notify=None):
     return ev
 
 
+def account_exposure(max_age=45):
+    """계좌 전체 총 명목(롱·숏 절댓값 합)과 총자산을 돌려준다. 봇 여러 개가 같은 값을 쓰도록 파일에 잠시 캐시한다. 실패하면 (None, None) — 이 경우 진입을 막지 않는다."""
+    path = "coin_account_exposure.json"
+    try:
+        c = json.load(open(path, encoding="utf-8"))
+        if time.time() - c["t"] <= max_age: return c["gross"], c["eq"]
+    except Exception: pass
+    try:
+        ex = g.get_exchange(); ex.load_markets()
+        gross = sum(abs(float(p.get("notional") or 0)) for p in ex.fetch_positions(params=g.UTA) if float(p.get("contracts") or 0) > 0)
+        eq = float(((ex.privateUtaGetV3AccountAssets({}).get("data") or {}).get("accountEquity")) or 0)
+        json.dump({"t": time.time(), "gross": gross, "eq": eq}, open(path, "w", encoding="utf-8"))
+        return gross, eq
+    except Exception as e:
+        print(f"  ⚠️ 계좌 노출 조회 실패(진입 제한 생략): {type(e).__name__}")
+        return None, None
+
+
 def run_check(send=True):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"\n{'=' * 56}\n  코인 평균단가 사다리 봇 — {CFG['symbol']} {'롱' if CFG['side'] == 'long' else '숏'} — {now}{' [모의]' if CFG.get('paper') else ''}\n{'=' * 56}")
@@ -256,6 +275,12 @@ def run_check(send=True):
     if CFG.get("opp_state"):        # 추세 보유 모드가 반대쪽 봇의 사다리 단계를 본다 (읽기 전용)
         try: CFG["opp_bs"] = int(json.load(open(CFG["opp_state"], encoding="utf-8")).get("bs", 0))
         except Exception: CFG["opp_bs"] = 0
+    CFG["_acct_block"] = False
+    if send and not CFG.get("paper") and float(CFG.get("acct_max_ratio") or 0) > 0:
+        gross, eq = account_exposure()
+        if gross is not None and eq and gross >= float(CFG["acct_max_ratio"]) * eq:
+            CFG["_acct_block"] = True
+            print(f"  🚦 계좌 총 명목 {gross:,.0f}USDT ≥ 총자산 {eq:,.0f}USDT × {CFG['acct_max_ratio']:g}배 — 신규 진입 중단(청산·손절은 그대로)")
     order_fn = lambda side, usdt, p, ro, qty: g.place_order(CFG["symbol"], side, usdt, p, reduce_only=ro, dry_run=not send, qty_override=qty)
     step(state, price, time.time(), order_fn, print, notify=(lambda m: g.send_discord(m)) if (send and not CFG.get("paper")) else None)
     if send: g.save_state(state)
