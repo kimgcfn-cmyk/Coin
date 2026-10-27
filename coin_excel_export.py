@@ -14,11 +14,8 @@ from coin_excel_builder import add_shadow_sheet
 
 OUT = "/Users/Muita/Desktop/Coin/코인봇수익률"
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "trading-ec2"]
-BOTS = {"T": ("coin_grid_short_t", "TUSDT"), "ORDER": ("coin_grid_short_order", "ORDERUSDT"), "CAP": ("coin_grid_cap", "CAPUSDT"),
-        "CAP_S": ("coin_grid_short_cap", "CAPUSDT"), "IRYS_L": ("coin_grid_irys", "IRYSUSDT"), "IRYS_S": ("coin_grid_short_irys", "IRYSUSDT"),
-        "Q_L": ("coin_grid_q", "QUSDT"), "Q_S": ("coin_grid_short_q", "QUSDT"),
-        "HD_Q_L": ("coin_hd_q_long", "QUSDT"), "HD_Q_S": ("coin_hd_q_short", "QUSDT"),            # 롱숏합동전략 (2026-10-27 11:21 KST 실전)
-        "HD_CAP_L": ("coin_hd_cap_long", "CAPUSDT"), "HD_CAP_S": ("coin_hd_cap_short", "CAPUSDT")}   # Q는 모의로 시작해 실전으로 전환 — 로그에 [모의 체결] 줄이 섞여 있어 건너뛴다   # IRYS는 모의(paper) 거래 — 실제 주문 없음
+BOTS = {"HD_Q_L": ("coin_hd_q_long", "QUSDT"), "HD_Q_S": ("coin_hd_q_short", "QUSDT"),            # 롱숏합동전략 (2026-10-27 실전)
+        "HD_CAP_L": ("coin_hd_cap_long", "CAPUSDT"), "HD_CAP_S": ("coin_hd_cap_short", "CAPUSDT")}
 # 로그에 없는 체결(사용자 지시로 직접 낸 청산 주문). 주문 응답 값이고 시각은 근사다.
 EXTRA = {
          # 11:54 사용자 지시로 Q 롱숏합동전략 중지 후 Q 포지션 시장가 전량 청산 (롱 1,495개 평균 0.20747, 숏 492개 평균 0.207467)
@@ -429,71 +426,11 @@ def main():
     b.NOW_KST = now
     res = {}
     for key, (name, sym) in BOTS.items():
-        fills = parse_fills(sec.get(("LOG", name), []), skip_paper=key in ("Q_L", "Q_S")) + EXTRA.get(key, [])
+        fills = parse_fills(sec.get(("LOG", name), []), skip_paper=False) + EXTRA.get(key, [])
         fills.sort(key=lambda r: r["t"])
         try: state = json.loads("\n".join(sec.get(("STATE", name), [])) or "{}")
         except Exception: state = {}
-        px = last_price(sym)
-        res[key] = (fills, state, px)
-    # ── T ──
-    fills, state, px = res["T"]
-    save_atomic(os.path.join(out, "T봇_숏전략_수익률.xlsx"), lambda p: b.build(p, "T(TUSDT)", "short", fills, 1000, 5, px or 0.0, "조회 시점 시세 (자동 갱신)",
-        f"서버 봇 로그의 실제 체결 {len(fills)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST.",
-        ["· 마지막 행(10/25 22:47 KST 수동 청산)은 로그에 없는 체결이라 주문 응답 값을 직접 넣었고 시각은 근사입니다.", "· 기간 중 한도 200→1000, 진입 20→100→50 USDT, 레버리지 10→3→5배로 설정이 바뀌었습니다. 기준 자본은 현재 설정(1000÷5) 기준입니다."],
-        strategy=mk_short("T", "프리셋 max_total_usdt 1000 (첫 가동 때는 200)", T_HIST, "TUSDT 가격이 기준가 대비 +0.5% 오를 때 숏을 쌓고 −1% 내리면 회수하는 '반대(숏) 그리드' 전략입니다. 10/26 11:37에 재가동했다가 13:20에 사용자 지시로 다시 중지·청산했습니다. 이 파일은 마지막 설정을 요약합니다.")))
-    # ── ORDER ──
-    fills, state, px = res["ORDER"]
-    save_atomic(os.path.join(out, "ORDER봇_숏전략_수익률.xlsx"), lambda p: b.build(p, "ORDER", "short", fills, 1000, 5, px or 0.0, "조회 시점 시세 (자동 갱신)",
-        f"서버 봇 로그의 실제 체결 {len(fills)}건({fills[0]['t'] if fills else '-'} ~ {fills[-1]['t'] if fills else '-'} KST)으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST.",
-        ["· 거래소에는 사용자가 수동으로 들고 있는 ORDER 숏 100개가 따로 있지만 봇 거래가 아니라 이 표에 넣지 않았습니다. 10/26 10:05 KST에 사용자가 직접 추가한 숏 2,230개(평균 0.042681)는 봇 장부에 편입해서 표에 '수동 숏 편입' 행으로 넣었습니다(수수료는 같은 비율로 계산한 추정).", "· 기간 중 진입 크기 100→50 USDT, 환매 간격 −2%→−1% 등으로 설정이 바뀌었습니다. 기준 자본은 현재 설정(1000÷5) 기준입니다.",
-         f"· 봇 상태 파일 비교: 누적 실현 {state.get('cum_pnl') or 0:.2f} USDT, 누적 수수료 {state.get('cum_fees') or 0:.2f} USDT (수수료 배분 방식 차이로 소폭 다를 수 있음)."],
-        strategy=mk_short("ORDER", "프리셋 max_total_usdt 1000", O_HIST, "ORDER 가격이 기준가 대비 +0.5% 오를 때 숏을 쌓고 −1% 내리면 회수하는 '반대(숏) 그리드' 전략입니다. 10/26 13:21에 사용자 지시로 중지·청산했고 이 파일은 마지막 설정을 요약합니다.")))
-    # ── CAP ──
-    fills, state, px = res["CAP"]
-    try: shadow = json.loads("\n".join(sec.get(("SHADOW", "cap"), [])) or "{}")
-    except Exception: shadow = {}
-    cap_intro = (f"서버 봇 로그의 실제 체결 {len(fills)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST." if fills else
-                 f"CAP 롱 봇은 2026-10-26 07:11 KST에 시작했고 아직 체결이 없습니다(−1% 눌림 대기). 마지막 갱신 {now} KST. 체결이 생기면 자동으로 채워집니다.")
-    CALLS["CAP_L"] = _args(lambda p: b.build(p, "CAP", "long", fills, 500, 5, px or 0.0, "조회 시점 시세 (자동 갱신)", cap_intro,
-        ["· 체결 내역은 서버 로그에서 자동으로 채워집니다. 직접 수정한 내용은 다음 갱신 때 덮어써집니다."], spare=0 if fills else 60,
-        strategy=dict(subtitle="CAP 가격이 기준가 대비 −0.5% 눌리면 사고 +1% 오르면 파는 롱 그리드 전략에 급등 추격·급락 대응·트레일링 청산(−10%, 2시간 휴식)을 더한 구성입니다. 10/26 11:55부터 기준가를 직전 5분 평균으로 쓰고, B5·B10 그림자 모드는 가상 비교를 계속합니다. 현재 가동 중입니다.",
-                      rules=CAP_RULES, params=CAP_PARAMS, history=CAP_HIST, fit=CAP_FIT, backtests=CAP_BT),
-        extra=lambda wb: add_shadow_sheet(wb, shadow, state, px)))
-    # ── CAP 숏 (10/26 13:05 롱에서 전환) ──
-    fl, stt, pxx = res["CAP_S"]
-    CAPS_HIST = [
-     ("10/26 13:05", "CAP 숏 봇 가동: 기준가 직전 5분 평균, 진입 +0.5%/100, 환매 −1%/200, 추격 200, 한도 1000, 진입 간격 규칙, 평균가 +10% 손절, 5배", "CAP 롱 봇(이전 −77.7 USDT 실현, 수동 청산)을 중지하고 숏으로 전환. 사용자 수동 숏(약 4,400개)은 봇 장부에서 제외하고 분리"),
-     ("10/26 14:30", "양방향 전략(cap_short_300)으로 재가동: 진입 +0.5%/50, 환매 −1%/100, 추격 100, 한도 300(→16:42 425), 평균 진입가 이하에서만 환매, 평균가 +15% 손절", "사용자 요청으로 수동 숏을 봇 장부에 편입(14:30 3,978개 등). 이후 수동 거래마다 장부 정정"),
-     ("10/26 15:3x", "12시간 하락 추세 필터(롱 신규 매수 중단·숏 보강)와 상승 추세 신규 숏 차단 추가", "하락 보강은 15:54~15:55 실행(100+82 USDT)"),
-     ("10/26 16:5x", "하락 추세 모드에 저점 +1/+2/+3/+4/+5% 반등 사다리 환매(1/5씩) 추가", "17:50·17:54·18:08에 3단계 환매"),
-     ("10/26 18:3x", "12시간 추세 필터·사다리 끄고 일반 숏 그리드로 전환, 기준가=마지막 체결가(ref_mode=last)", "현재 설정. 수동 숏은 봇 장부 밖으로 분리"),
-    ]
-    if True:      # 롱·숏 한 파일에 항상 포함 (체결이 없으면 숏 쪽은 빈 표)
-      CALLS["CAP_S"] = _args(lambda p: b.build(p, "CAP 숏", "short", fl, 425, 5, pxx or 0.0, "조회 시점 시세 (자동 갱신)",
-        (f"서버 봇 로그의 실제 체결 {len(fl)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST." if fl else f"CAP 숏 봇은 2026-10-26 13:05 KST에 시작했고 아직 체결이 없습니다(평균 5분 준비·진입 신호 대기). 마지막 갱신 {now} KST."),
-        ["· 봇 장부에 편입·정정한 수동 숏 거래('수동 숏 편입'·'수동 청산' 행)는 봇 로그에 없어서 거래소 체결 기준 값을 넣었습니다. 편입하지 않은 수동 숏은 이 표에 넣지 않았습니다(20:05 이후 현재 거래소에 있는 수동 숏 포함).", "· 18:10 '수동 정정 청산' 행은 사용자가 숏을 전량 직접 청산한 뒤 봇 장부 잔량을 0으로 맞춘 것으로, 체결가를 알 수 없어 평균 진입가로 환산했습니다(손익 0, 수수료만 반영).", "· 이 표의 손익은 이동평균법(평균 진입가) 계산이라 거래소의 체결별 실현손익과 다를 수 있고, 수동 거래분이 포함되어 봇 상태 파일의 누적 실현과도 다릅니다.", "· CAP 롱 봇의 이전 거래는 CAP봇_롱전략_수익률.xlsx에 있습니다."], spare=0 if fl else 60,
-        strategy=mk_short("ORDER", "프리셋 max_total_usdt 1000", CAPS_HIST, "CAP 가격이 기준가 대비 +0.5% 오를 때 숏을 쌓고 −1% 내리면 회수하는 숏 그리드입니다(현재 설정: 기준가 마지막 체결가, 진입 50·환매 100 USDT, 한도 425, 평균 진입가 이하 환매, 평균가 +15% 손절). 10/26 18:3x부터 추세 필터 없이 일반 그리드로 가동 중이며, 수동 숏은 분리합니다. 아래 규칙·설정 표는 ORDER 기본 값이라 CAP의 현재 값과 다를 수 있습니다.")))
-    # ── Q 롱·숏 (10/27 실전) ──
-    for key, mode, nm, fname, rules, params, hist, fit, bt, sub in (
-        ("Q_L", "long", "Q", "Q봇_롱전략_수익률.xlsx", Q_LONG_RULES, Q_LONG_PARAMS, Q_LONG_HIST, Q_LONG_FIT, Q_LONG_BT,
-         "Q 가격이 기준가(직전 5분 평균) 대비 −1% 눌리면 50 USDT 사고 +1% 오르면 50 USDT 파는 롱 그리드(평균 매수가 이상에서만 매도, 진입 간격 없음)에 급등 추격·급락 대응·트레일링 청산(−15%, 2시간 휴식)을 더한 구성입니다. 10/27 08:43부터 실전이고 직접 산 롱 767개를 장부에 편입했습니다."),
-        ("Q_S", "short", "Q 숏", "Q봇_숏전략_수익률.xlsx", Q_SHORT_RULES, Q_SHORT_PARAMS, Q_SHORT_HIST, SHORT_FIT, Q_SHORT_BT,
-         "Q 가격이 기준가(직전 5분 평균) 대비 +1% 오르면 50 USDT 숏을 쌓고 −1% 내리면 50 USDT 회수하는 숏 그리드(평균 진입가 이하에서만 환매, 진입 간격 없음)입니다. 10/27 08:41부터 실전이며 Q 롱과 함께 양방향 전략으로 돕니다.")):
-        fl, stt, pxx = res[key]
-        CALLS[key] = _args(lambda p, fl=fl, mode=mode, nm=nm, pxx=pxx, rules=rules, params=params, hist=hist, fit=fit, bt=bt, sub=sub, key=key: b.build(p, nm, mode, fl, 300, 5, pxx or 0.0, "조회 시점 시세 (자동 갱신)",
-            (f"서버 봇 로그의 실제 체결 {len(fl)}건으로 자동 생성한 파일입니다(모의 가동 때 체결은 제외). 마지막 갱신 {now} KST." if fl else f"Q {'롱' if mode == 'long' else '숏'} 봇은 2026-10-27에 실전 가동을 시작했고 아직 실전 체결이 없습니다. 마지막 갱신 {now} KST. 체결이 생기면 자동으로 채워집니다."),
-            ["· 체결 내역은 서버 로그에서 자동으로 채워집니다. 직접 수정한 내용은 다음 갱신 때 덮어써집니다.", "· 모의 가동 때의 가상 체결은 포함하지 않았습니다." + (" 편입한 수동 롱 767개는 거래소 포지션 기준으로 넣었습니다(수수료는 같은 비율로 계산한 추정)." if key == "Q_L" else "")],
-            spare=0 if fl else 60, strategy=dict(subtitle=sub, rules=rules, params=params, history=hist, fit=fit, backtests=bt)))
-    # ── 롱·숏 한 파일 (CAP, Q): 롱 / 숏 개별 시트 + 합계 요약·합산 추이 ──
-    for tag, (nm, label, kl, ks, olds) in PAIR_FILES.items():
-        la, sa = CALLS[kl], CALLS[ks]
-        fn = f"{label}봇_롱숏전략_수익률.xlsx"
-        save_atomic(os.path.join(out, fn), lambda p, la=la, sa=sa, nm=nm: b.build_pair(p, nm, la, sa, now_kst=now))
-        old_dir = os.path.join(out, "이전")                      # 예전 롱·숏 개별 파일은 지우지 않고 '이전' 폴더로 옮긴다
-        for o in olds:
-            src = os.path.join(out, o)
-            if os.path.exists(src):
-                os.makedirs(old_dir, exist_ok=True); os.replace(src, os.path.join(old_dir, o))
+        res[key] = (fills, state, last_price(sym))
     # ── 롱숏합동전략 (CAP, Q) — 롱+숏 합계 중심 한 파일 ──
     for tag in ("CAP", "Q"):
         fl, _, pl = res[f"HD_{tag}_L"]; fs, _, ps = res[f"HD_{tag}_S"]
@@ -506,21 +443,13 @@ def main():
         save_atomic(os.path.join(out, f"{tag}_롱숏합동전략_수익률.xlsx"), lambda p, la=side_args("long", fl, pl), sa=side_args("short", fs, ps), st_=st_, tag=tag: b.build_pair(
             p, tag, la, sa, now_kst=now, pair_strategy=st_, pair_title=f"{tag} 롱숏합동전략 — 전략 요약",
             intro=f"{tag} 롱숏합동전략: 롱과 숏을 합한 값이 이 전략의 결과입니다. 롱 요약·숏 요약은 합계의 내역입니다. 마지막 갱신 {now} KST."))
-    # ── IRYS 그림자(모의 체결) ──
-    for key, side, title, fname in (("IRYS_L", "long", "IRYS 롱(가상)", "IRYS_롱_가상거래.xlsx"), ("IRYS_S", "short", "IRYS 숏(가상)", "IRYS_숏_가상거래.xlsx")):
-        fl, stt, pxx = res[key]
-        intro = (f"실제 주문 없이 규칙만 가상으로 돌린 모의 거래입니다(슬리피지 0.28%·수수료 0.04% 가정). 모의 체결 {len(fl)}건. 마지막 갱신 {now} KST. IRYS가 이 전략에 맞는지 관찰하는 용도입니다."
-                 if fl else f"실제 주문 없이 규칙만 가상으로 돌리는 모의 거래입니다. 2026-10-26 12:15 KST에 시작했고 아직 체결이 없습니다(평균가 준비·신호 대기). 마지막 갱신 {now} KST.")
-        save_atomic(os.path.join(out, fname), lambda p, fl=fl, pxx=pxx, side=side, title=title, intro=intro: b.build(p, title, side, fl, 1000, 5, pxx or 0.0, "조회 시점 시세 (자동 갱신)", intro,
-            ["· 모의 거래라 실제 손익이 아닙니다. 사이즈는 진입·매수 100 / 환매·매도 200 / 한도 1000, 5분 평균가 기준, " + ("트레일 −10%+2시간 휴식·급등 모드 포함입니다." if side == "long" else "평균가 +10% 손절·급등 보호 포함입니다."), "· 과거 백테스트에서는 IRYS가 펌프·폭락이 커서 롱·숏 모두 구간별 편차가 매우 컸습니다."],
-            spare=0 if fl else 60))
     # ── 급등 알림 사후 추적 ──
     try: surge = json.loads("\n".join(sec.get(("OUTCOME", "surge"), [])) or "{}")
     except Exception: surge = {}
     REF9 = [("ERAUSDT", 32, 0.09139, 0.08426), ("BRUSDT", 257, 0.47914, 0.49658), ("AKEUSDT", 576, 0.03008, 0.031291), ("QUSDT", 650, 0.07547, 0.056556), ("SKYAIUSDT", 873, 0.03662, 0.03408),
             ("TAGUSDT", 996, 0.0006758, 0.0004908), ("JCTUSDT", 1013, 0.007184, 0.005781), ("DOODUSDT", 1202, 0.001645, 0.001395), ("MAGMAUSDT", 1206, 0.38125, 0.34554)]
     save_atomic(os.path.join(out, "급등알림_사후추적.xlsx"), lambda p: b.build_surge_workbook(p, surge.get("alerts", []), REF9))
-    print(f"[{now} KST] 저장 완료 → {out} | T {len(res['T'][0])}건, ORDER {len(res['ORDER'][0])}건, CAP {len(res['CAP'][0])}건")
+    print(f"[{now} KST] 저장 완료 → {out} | CAP 롱 {len(res['HD_CAP_L'][0])}건·숏 {len(res['HD_CAP_S'][0])}건, Q 롱 {len(res['HD_Q_L'][0])}건·숏 {len(res['HD_Q_S'][0])}건")
 
 if __name__ == "__main__":
     try:
