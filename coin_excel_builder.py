@@ -25,7 +25,7 @@ thin = Side(style="thin", color="BFBFBF"); box = Border(left=thin, right=thin, t
 ctr = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 import math
-def add_strategy_sheet(wb, name, short, st, prefix=""):
+def add_strategy_sheet(wb, name, short, st, prefix="", title=None):
     ws = wb.create_sheet(prefix + "전략 요약", 0)
     sec_fill = PatternFill("solid", fgColor="D9E2F3")
     widths = {"A": 24, "B": 62, "C": 72}
@@ -41,7 +41,7 @@ def add_strategy_sheet(wb, name, short, st, prefix=""):
             if isinstance(v, str) and not v.startswith("="):
                 lines = max(lines, math.ceil(len(v) * 1.75 / widths[col]) + v.count("\n"))
         ws.row_dimensions[r].height = max(15, 13.5 * lines)
-    ws["A1"] = f"{name} {'숏' if short else '롱'} 그리드 봇 — 전략 요약"; ws["A1"].font = f_title
+    ws["A1"] = title or f"{name} {'숏' if short else '롱'} 그리드 봇 — 전략 요약"; ws["A1"].font = f_title
     ws["A2"] = st["subtitle"]; ws["A2"].font = f_note; ws.merge_cells("A2:C2"); ws["A2"].alignment = wrap; ws.row_dimensions[2].height = 28
     r = 4
     h(r, "1. 매매 규칙 (한눈에)"); r += 1
@@ -98,6 +98,12 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     ENT, EXT = ("숏 진입", "환매") if short else ("매수", "매도")
     isE = (lambda lab: ("진입" in lab or "추격" in lab or "보강" in lab or "편입" in lab)) if short else (lambda lab: "매수" in lab)
     def kind(lab, entry):
+        import re as _re
+        mm = _re.search(r"(\d+)단계", lab); nn = mm.group(1) if mm else ""
+        if "재투입" in lab: return "재투입 (수익실현 후 재진입)"
+        if "손절" in lab: return "손절 정리 " + (_re.search(r"(\d/\d)", lab).group(1) + "구간" if _re.search(r"(\d/\d)", lab) else "")
+        if "사다리" in lab and nn and entry: return f"사다리 진입 {nn}단계"
+        if "청산" in lab and nn and not entry: return f"청산 {nn}단계 (수익실현)"
         if "추격" in lab: return "급락 추격 숏" if short else "급등 추격 매수"
         if "분할" in lab: return "급락 분할 환매 " + lab.split()[-1] if short else "급등 분할 매도"
         if "편입" in lab: return "수동 숏 편입" if short else "수동 롱 편입"
@@ -290,7 +296,7 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     wb.calculation.fullCalcOnLoad = True
     wb.save(path); return dict(first=first, last=last, bad=bad)
 
-def build_pair(path, name, long_args, short_args, now_kst=None, intro=""):
+def build_pair(path, name, long_args, short_args, now_kst=None, intro="", pair_strategy=None, pair_title=None):
     """롱·숏 한 파일: 롱/숏 시트를 각각 만들고(접두어 '롱 '/'숏 ') 맨 앞에 '합계 요약'·'합산 추이'를 둔다.
     long_args/short_args 는 build() 의 인자(path 제외, wb_in/prefix 제외)를 dict 로 넘긴다."""
     wb = Workbook(); wb.remove(wb.active)
@@ -391,8 +397,14 @@ def build_pair(path, name, long_args, short_args, now_kst=None, intro=""):
     for ttl in (ch.title, ch.x_axis.title, ch.y_axis.title): ttl.overlay = False
     for ax in (ch.x_axis, ch.y_axis): ax.majorGridlines.spPr = GraphicalProperties(ln=LineProperties(solidFill="D9D9D9", w=6350))
     ch.height = 11; ch.width = 22; z.add_chart(ch, "F3")
+    for r_ in range(3, 4 + len(rows)):                  # 합계 열(D) 강조
+        c_ = z.cell(r_, 4)
+        if r_ == 3: continue
+        c_.font = Font(name=AR, size=10, bold=True)
+        if c_.fill is None or c_.fill.fgColor.rgb in (None, "00000000"): c_.fill = PatternFill("solid", fgColor="F2F8EE")
+    if pair_strategy: add_strategy_sheet(wb, name, False, pair_strategy, "합동 ", pair_title)
     # 시트 순서
-    order = ["합계 요약", "합산 추이", "롱 요약", "숏 요약", "롱 거래내역", "숏 거래내역", "롱 전략 요약", "숏 전략 요약", "롱 설명·가정", "숏 설명·가정"]
+    order = ["합계 요약", "합산 추이", "합동 전략 요약", "롱 요약", "숏 요약", "롱 거래내역", "숏 거래내역", "롱 전략 요약", "숏 전략 요약", "롱 설명·가정", "숏 설명·가정"]
     byname = {w.title: w for w in wb._sheets}
     wb._sheets = [byname[n] for n in order if n in byname] + [w for w in wb._sheets if w.title not in order]
     wb.active = 0
