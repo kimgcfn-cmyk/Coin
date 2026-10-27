@@ -22,6 +22,8 @@ BASE = "https://api.bitget.com/api/v2/mix/market"
 MAX_ACTIVE = 3
 PUMP = 0.30            # 24시간 안에 저→고 상승률
 ROLL = 0.04            # 고점 대비 하락 확인
+MAX_DROP = 0.12        # 고점 대비 이 이상 이미 내려왔으면 신호로 보지 않음(되돌림 초기만)
+MAX_AGE_BARS = 8       # 고점이 이 시간봉 수보다 오래전이면 신호로 보지 않음
 MIN_VOL = 3_000_000    # 24시간 거래대금(USDT) 하한 (스캔 후보용)
 MIN_CHG = 0.20         # 티커 24시간 변동률 하한(후보 압축용)
 HORIZON_H = 24
@@ -56,6 +58,7 @@ def detect(rows, price):
     hi_idx = max(range(len(w)), key=lambda k: w[k][2]); hi = w[hi_idx][2]
     lo = min(x[3] for x in w[:hi_idx + 1])
     if hi / lo - 1 < PUMP or price > hi * (1 - ROLL): return None
+    if price < hi * (1 - MAX_DROP) or (len(w) - 1 - hi_idx) > MAX_AGE_BARS: return None      # 이미 많이 떨어졌거나 고점이 오래전이면 '되돌림 시작' 신호가 아님
     return dict(pump=round((hi / lo - 1) * 100, 1), hi=hi, lo=lo)
 
 
