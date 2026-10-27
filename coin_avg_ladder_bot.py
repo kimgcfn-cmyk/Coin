@@ -36,7 +36,7 @@ CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
                ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0), ("deep_rebound_pct", 0.0), ("deep_from_stage", 3), ("trend_hold", False), ("trend_window_min", 30), ("trend_gain_pct", 3.0),
-               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
+               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("entry_ref_min", 0), ("entry_ref_mix", 0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -58,8 +58,9 @@ def step(state, price, now, order_fn, log, notify=None):
     if 0 < st["qty"] * price < 0.05:                       # 부동소수점 잔량 정리
         st.update(qty=0.0, hold=0.0, avg=0.0)
     # 시세 기록(직전 N분 평균·급변 감지용)
-    hist = [h for h in st.get("ref_hist", []) if now - h[0] <= 1900]
+    hist = [h for h in st.get("ref_hist", []) if now - h[0] <= max(3700, int(CFG.get("entry_ref_min") or 0) * 60 + 300)]
     prev = [h for h in hist if now - h[0] <= CFG["ref_min"] * 60 + 20]
+    hist_old = list(hist)
     hist.append([now, price]); st["ref_hist"] = hist
     if now < st.get("rest_until", 0):
         log(f"  😴 손절 후 휴식 중 — 약 {(st['rest_until'] - now) / 60:.0f}분 뒤 재개"); return ev
@@ -152,6 +153,12 @@ def step(state, price, now, order_fn, log, notify=None):
             st.update(bs=0, ss=0, want_re=False, full=False, stopped=0, n_re=st.get("n_re", 0) + 1)
         return ev
     base = st["avg"] if st["qty"] > 1e-12 else ref
+    erm = int(CFG.get("entry_ref_min") or 0)         # >0이면 진입 사다리 기준을 평균단가가 아니라 직전 erm분 평균 시세로 쓴다(2026-10-27 모의)
+    ent_base_ok = True
+    if erm:
+        eh = [p for t, p in hist_old if now - t <= erm * 60 + 20]
+        ent_base_ok = len(eh) >= max(3, int(erm * 0.8))
+        if ent_base_ok: base_entry = sum(eh) / len(eh)
     # ② 손절 3구간 (사다리가 다 찬 뒤)
     if stops and st["qty"] > 1e-12 and st["full"] and st["stopped"] < len(stops):
         k = st["stopped"]; lvl = st["avg_at_full"] * (1 - stops[k] / 100) if L else st["avg_at_full"] * (1 + stops[k] / 100)
@@ -165,9 +172,13 @@ def step(state, price, now, order_fn, log, notify=None):
             return ev
     # ③ 진입 / 청산 사다리
     eb = float(CFG["entry_base_pct"]) if CFG.get("entry_base_pct") else float(CFG["ladder_base_pct"])       # 진입 사다리 시작(10/27: ±1%), 청산 사다리는 ladder_base_pct(±2%)
-    ent_lv = base * (1 - (eb + CFG["ladder_step_pct"] * st["bs"]) / 100) if L else base * (1 + (eb + CFG["ladder_step_pct"] * st["bs"]) / 100)
+    eref = base_entry if (erm and ent_base_ok) else base
+    mixm = int(CFG.get("entry_ref_mix") or 0)        # 1=보수적(보유 중엔 평균단가와 N분 평균 중 롱은 낮은 쪽/숏은 높은 쪽), 2=공격적(반대)
+    if mixm and erm and ent_base_ok and st["qty"] > 1e-12:
+        eref = (min(st["avg"], base_entry) if L else max(st["avg"], base_entry)) if mixm == 1 else (max(st["avg"], base_entry) if L else min(st["avg"], base_entry))
+    ent_lv = eref * (1 - (eb + CFG["ladder_step_pct"] * st["bs"]) / 100) if L else eref * (1 + (eb + CFG["ladder_step_pct"] * st["bs"]) / 100)
     ext_lv = base * (1 + (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["ss"]) / 100) if L else base * (1 - (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["ss"]) / 100)
-    can_in = (price <= ent_lv) if L else (price >= ent_lv)
+    can_in = ((price <= ent_lv) if L else (price >= ent_lv)) and ent_base_ok
     can_out = (price >= ext_lv) if L else (price <= ext_lv)
     dr = float(CFG.get("deep_rebound_pct") or 0)
     if dr and can_in and st["qty"] > 1e-12 and st["bs"] + 1 >= int(CFG.get("deep_from_stage", 3)):      # 깊은 단계는 직전 crash_window_min분 저점(롱)/고점(숏)에서 dr% 되돌린 뒤에만 진입
