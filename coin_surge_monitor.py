@@ -1,4 +1,9 @@
 """
+[2026-10-27 변경] 알림 기준을 '급등 후 하락 신호 → TAG 롱숏전략 적합 종목'으로 바꿨다 (아래 '급등 후 하락 신호' 절).
+  기존 '5분 +5% & 거래량 급증' 급등 알림은 CFG["surge_alert"]=False 로 꺼 두었다(True 로 되돌리면 예전 방식도 같이 동작).
+  새 알림 = 24시간 안에 저→고 +30% 이상 오른 종목이 고점에서 4~8% 내려온 '순간'(신호 발생 직후) + 봇이 거래할 만한 유동성일 때만 즉시 1건.
+  사후 추적(1h·4h·12h·24h 뒤 가격, 최고·최저)은 같은 방식으로 coin_surge_outcomes.json 에 기록한다.
+
 급등 코인 탐지 모니터 — "펌프 후 되돌림 관찰" 알림 (알림 전용 — 실제 주문 없음)
 ============================================================
 Bitget USDT-M 선물 전 종목을 주기적으로 훑어서, 단기간에 가격이 급등하면서
@@ -77,11 +82,11 @@ except ImportError:
 CFG = {
     "product_type"     : "USDT-FUTURES",
     "min_vol_usdt"     : 5_000_000,                   # 24시간 거래대금 하한 (2026-10-26 1M→5M: 봇이 거래할 만한 유동성만)
-    "own_symbols"      : ["ORDERUSDT", "CAPUSDT", "TUSDT"],   # 봇 운용 종목 — 거래대금 하한과 무관하게 감시, 알림에 ⭐ 표시
+    "own_symbols"      : ["CAPUSDT", "QUSDT", "TAGUSDT"],   # 봇 운용 종목 — 거래대금 하한과 무관하게 감시, 알림에 ⭐ 표시
     "min_depth_usdt"   : 1000,                        # 유동성 판정: 호가 상위 5개(매수·매도 중 작은 쪽) 합계
     "max_spread_pct"   : 0.2,                         # 유동성 판정: 스프레드 상한
     "outcome_file"     : "coin_surge_outcomes.json",  # 알림 사후 추적 기록
-    "outcome_minutes"  : [60, 240],                   # 알림 후 이 시간(분)이 지난 첫 점검에서 가격 변화를 기록
+    "outcome_minutes"  : [60, 240, 720, 1440],                   # 알림 후 이 시간(분)이 지난 첫 점검에서 가격 변화를 기록
     "outcome_keep_days": 14,
     "summary_min"      : 10,                          # 관찰 중인 급등 종목 요약 간격(분). 새 알림·관찰 종료는 즉시, 나머지는 이 간격으로만
     "watch_min"        : 60,                          # 알림 후 이 시간(분) 동안을 "관찰 중"으로 본다(= 쿨다운 시간과 같음)
@@ -100,6 +105,16 @@ CFG = {
     "run_budget_sec"   : 40,                          # 1회 실행 시간 상한 (1분 cron 겹침 방지)
     "heartbeat_hours"  : 12,                          # '스캔 진행중' 생존 알림 간격 (0이면 끔)
     "state_file"       : "coin_surge_state.json",
+    # ── 급등 후 하락 신호(TAG 롱숏전략 적합 종목) — coin_pumpfade.py 의 탐지식과 같다 ──
+    "surge_alert"      : False,                       # True 면 예전 '5분 +5%' 급등 알림도 같이 동작
+    "pf_alert"         : True,
+    "pf_pump"          : 0.30,                        # 24시간(시간봉 25개) 안에 저→고 상승률
+    "pf_roll_pct"      : 4.0,                         # 고점 대비 이만큼 내려오면 신호 발생
+    "pf_max_drop_pct"  : 8.0,                         # 이보다 더 내려왔으면 '발생 직후'가 아니므로 알리지 않음
+    "pf_max_age_bars"  : 8,                           # 고점이 이 시간봉 수보다 오래전이면 알리지 않음
+    "pf_min_chg24"     : 15.0,                        # 후보 압축용 24시간 등락률 하한(%)
+    "pf_dedupe_hours"  : 24,                          # 같은 종목 재알림 금지
+    "pf_stats"         : "합동·넓은 사다리 평균 +0.7%·최악 −31.5%·평균 MDD 18.5% / 숏 단독은 평균 +6.1%이나 최악 −119%",
 }
 
 BITGET = "https://api.bitget.com"
@@ -279,6 +294,56 @@ def in_cooldown(state: dict, sym: str, price: float, now: int) -> bool:
         return False
     return price < a["price"] * (1 + CFG["rearm_pct"] / 100)
 
+def fetch_hourly(symbol: str, limit: int = 30) -> list:
+    """시간봉 [ts, open, high, low, close, baseVol, quoteVol] 오름차순. 마지막 봉은 진행 중."""
+    data = _api_get("/api/v2/mix/market/candles", {"symbol": symbol, "productType": CFG["product_type"], "granularity": "1H", "limit": str(limit)})
+    rows = []
+    for r in data or []:
+        try: rows.append([int(r[0])] + [float(v) for v in r[1:7]])
+        except (IndexError, TypeError, ValueError): continue
+    rows.sort(key=lambda r: r[0])
+    return rows
+
+def pf_detect(rows: list, price: float):
+    """급등 후 하락 신호: 최근 24시간 시간봉에서 저→고 +pf_pump 이상 오른 뒤 고점 대비 pf_roll_pct~pf_max_drop_pct 내려온 상태.
+    (coin_pumpfade.detect 와 같은 식. 단 '발생 직후'만 알리려고 하락 폭 상한을 8%로 둠). 해당 없으면 None."""
+    if len(rows) < 26 or price <= 0: return None
+    w = rows[-25:]
+    hi_i = max(range(len(w)), key=lambda k: w[k][2]); hi = w[hi_i][2]
+    lo = min(x[3] for x in w[:hi_i + 1])
+    if lo <= 0 or hi / lo - 1 < CFG["pf_pump"]: return None
+    drop = (1 - price / hi) * 100; age = len(w) - 1 - hi_i
+    if drop < CFG["pf_roll_pct"] or drop > CFG["pf_max_drop_pct"] or age > CFG["pf_max_age_bars"]: return None
+    return {"pump": (hi / lo - 1) * 100, "hi": hi, "lo": lo, "drop": drop, "age_h": age}
+
+def pf_scan(state: dict, tickers: dict, now: int, t0: float) -> list:
+    """티커로 후보를 좁힌 뒤(24h 등락 ≥ pf_min_chg24, 거래대금·운용종목 조건) 시간봉으로 신호를 판정하고, 봇이 거래할 만한 유동성이면 알림 목록에 담는다.
+    반환: [(c, None, None, ex)] — ex["pf"] 에 신호 정보."""
+    seen = state.setdefault("pf_alerted", {})
+    cut = now - CFG["pf_dedupe_hours"] * 3600
+    for s_ in [k for k, v in seen.items() if v < cut]: del seen[s_]
+    cands = [(s_, t) for s_, t in tickers.items() if eligible(s_, t) and t["chg24"] >= CFG["pf_min_chg24"] and s_ not in seen]
+    cands.sort(key=lambda x: -x[1]["chg24"])
+    out = []
+    print(f"  급등 후 하락 점검: 후보 {len(cands)}종목 (24시간 {CFG['pf_min_chg24']:.0f}%↑)")
+    for sym, t in cands[:CFG["max_candidates"] * 2]:
+        if len(out) >= CFG["max_alerts"]: break
+        if time.time() - t0 > CFG["run_budget_sec"]:
+            print(f"  ⏱ 실행 시간 {CFG['run_budget_sec']}초 초과 — 남은 후보는 다음 실행으로"); break
+        sig = pf_detect(fetch_hourly(sym), t["price"]); time.sleep(0.15)
+        if not sig: continue
+        c = {"symbol": sym, "changes": {}, "score": sig["pump"], **t}
+        rows = fetch_candles(sym, 130)
+        ex = enrich(c, rows); ex["pf"] = sig
+        tag = f"저→고 +{sig['pump']:.0f}% · 고점 대비 -{sig['drop']:.1f}% · 고점 {sig['age_h']}시간 전"
+        if not ex["liquid"]:
+            print(f"  ⚪ {sym}: 신호 ({tag}) — 유동성 얇음(깊이 {ex['depth']}, 스프레드 {ex['spread']}) 제외"); continue
+        print(f"  🔻 {sym}: 급등 후 하락 신호 확정 ({tag})")
+        out.append((c, None, None, ex))
+        seen[sym] = now
+        state.setdefault("alerted", {})[sym] = {"ts": now, "price": c["price"]}
+    return out
+
 # ══════════════════════════════════════════════════════
 #  알림 메시지
 # ══════════════════════════════════════════════════════
@@ -340,9 +405,10 @@ def save_outcomes(o: dict):
 
 def record_alert(o: dict, c: dict, ratio: float, ratio24: float, ex: dict, now: int):
     o.setdefault("alerts", []).append({"sym": c["symbol"], "ts": now, "price": c["price"], "chg24": round(c["chg24"], 2), "vol": round(c["vol"]),
-        "ratio": round(ratio, 1), "ratio24": round(ratio24, 1), "net10h": None if ex["net10h"] is None else round(ex["net10h"], 1),
+        "ratio": None if ratio is None else round(ratio, 1), "ratio24": None if ratio24 is None else round(ratio24, 1), "net10h": None if ex["net10h"] is None else round(ex["net10h"], 1),
         "from_high": None if ex["from_high"] is None else round(ex["from_high"], 1), "depth": None if ex["depth"] is None else round(ex["depth"]),
-        "spread": None if ex["spread"] is None else round(ex["spread"], 3), "liquid": ex["liquid"], "own": ex["own"], "hi": c["price"], "lo": c["price"]})
+        "spread": None if ex["spread"] is None else round(ex["spread"], 3), "liquid": ex["liquid"], "own": ex["own"], "hi": c["price"], "lo": c["price"],
+        **({"kind": "pf", "pump": round(ex["pf"]["pump"], 1), "drop": round(ex["pf"]["drop"], 1)} if ex.get("pf") else {})})
 
 def update_outcomes(o: dict, tickers: dict, now: int):
     """열려 있는 알림마다: 최고·최저가 갱신, 60분/240분이 지난 첫 점검에서 가격을 기록."""
@@ -376,10 +442,29 @@ def show_outcomes():
     for a in al[:30]:
         kst = (datetime.fromtimestamp(a["ts"], timezone.utc) + timedelta(hours=9)).strftime("%m-%d %H:%M")
         r = lambda m: f"{(a[f'p{m}']/a['price']-1)*100:+6.1f}%" if f"p{m}" in a else "   대기"
-        print(f"    {kst} {a['sym']:<12} 알림가 {fmt_price(a['price']):>10}  1h {r(60)}  4h {r(240)}  4h내 최고 {((a.get('hi240', a.get('hi', a['price']))/a['price']-1)*100):+5.1f}% 최저 {((a.get('lo240', a.get('lo', a['price']))/a['price']-1)*100):+5.1f}%  "
+        print(f"    {kst} {a['sym']:<12} 알림가 {fmt_price(a['price']):>10}  1h {r(60)}  4h {r(240)}  12h {r(720)}  24h {r(1440)}  4h내 최고 {((a.get('hi240', a.get('hi', a['price']))/a['price']-1)*100):+5.1f}% 최저 {((a.get('lo240', a.get('lo', a['price']))/a['price']-1)*100):+5.1f}%  "
               f"{'⭐운용 ' if a.get('own') else ''}{'유동성 OK' if a.get('liquid') else '유동성 얇음'}")
 
+def build_pf_message(c: dict, ex: dict) -> str:
+    sg = ex["pf"]; sep = "━━━━━━━━━━━━━━━━━━━"
+    star = "⭐ <b>봇 운용 종목</b> — " if ex.get("own") else ""
+    dp = "-" if ex.get("depth") is None else f"{ex['depth']:,.0f}"; sp = "-" if ex.get("spread") is None else f"{ex['spread']:.3f}%"
+    lines = [f"🔻 <b>급등 후 하락 신호 — {c['symbol']}</b> (TAG 롱숏전략 적합 후보)", f"{star}{kst_now()}", sep,
+             f"24시간 저→고 <b>+{sg['pump']:.0f}%</b> ({fmt_price(sg['lo'])} → {fmt_price(sg['hi'])}) 후 고점({sg['age_h']}시간 전)에서 <b>-{sg['drop']:.1f}%</b> 내려옴",
+             f"현재가: {fmt_price(c['price'])}",
+             f"24시간 {c['chg24']:+.1f}% · 거래대금 {fmt_big(c['vol'])} USDT · 펀딩 {c['funding']:+.4f}%"]
+    if ex.get("net10h") is not None:
+        lines.append(f"10시간 {ex['net10h']:+.1f}% · 10시간 고점 대비 {ex['from_high']:+.1f}%")
+    lines += [f"호가 깊이(상위5) {dp} USDT · 스프레드 {sp} → ✅ 100 USDT 단계 진입 가능한 유동성", sep,
+              "📋 TAG 방식 설정(합동·넓은 사다리): 롱·숏 각 한도 300~500 · 단계 100 USDT · 진입 평균가 ∓3%부터 3%씩 · 청산 +6%부터 3%씩 · 진입 기준 직전 60분 평균 · 3단계 손절 8/10/12%",
+              f"📊 과거 24시간 재생 모의(급등 후 하락 56건): {CFG['pf_stats']}",
+              "⚠️ 알림 전용 — 자동 주문 없음. 모의 결과는 표본이 적고 경로에 민감해 수익 보장이 아니며, 투자 조언이 아닙니다.",
+              "ℹ️ 알림 1·4·12·24시간 뒤 가격은 자동 기록됩니다."]
+    return "\n".join(lines)
+
 def build_message(c: dict, ratio: float, ratio24: float, ex: dict = None) -> str:
+    if ex and ex.get("pf"):
+        return build_pf_message(c, ex)
     moves = " / ".join(f"{fmt_window(m)} {v:+.1f}%"
                        for m, v in c["changes"].items() if v is not None)
     sep = "━━━━━━━━━━━━━━━━━━━"
@@ -416,7 +501,7 @@ def build_watch_messages(state: dict, tickers: dict, now: int, new_syms: list) -
             a = state.get("alerted", {}).get(s)
             c = chg(s, a) if a else None
             lines.append(f"{s}: 알림가 {fmt_price(a['price'])} → " + (f"현재 {c:+.1f}%" if c is not None else "시세 조회 불가") if a else f"{s}: 기록 없음")
-        msgs.append("🏁 <b>급등 관찰 종료</b> (알림 후 " + str(CFG["watch_min"]) + "분 경과)\n" + "\n".join(lines))
+        msgs.append("🏁 <b>신호 관찰 종료</b> (알림 후 " + str(CFG["watch_min"]) + "분 경과)\n" + "\n".join(lines))
     if new_syms:
         state["last_summary_ts"] = now
     elif active and now - state.get("last_summary_ts", 0) >= CFG["summary_min"] * 60 - 30:
@@ -424,7 +509,7 @@ def build_watch_messages(state: dict, tickers: dict, now: int, new_syms: list) -
         for s, a in sorted(active.items(), key=lambda x: -x[1]["ts"]):
             c = chg(s, a); h = state.get("hist", {}).get(s, []); c5 = change_over(h, now, 5, tickers[s]["price"]) if (h and s in tickers) else None
             lines.append(f"{s}: 알림 {(now - a['ts']) // 60}분 전 · 알림가 {fmt_price(a['price'])} → " + (f"현재 {c:+.1f}%" if c is not None else "조회 불가") + (f" · 최근 5분 {c5:+.1f}%" if c5 is not None else ""))
-        msgs.append(f"🔎 <b>급등 관찰 {CFG['summary_min']}분 요약</b> (관찰 중 {len(active)}개 — 새 급등이 없으면 이 요약만 옵니다)\n" + "\n".join(lines))
+        msgs.append(f"🔎 <b>신호 관찰 {CFG['summary_min']}분 요약</b> (관찰 중 {len(active)}개 — 새 신호가 없으면 이 요약만 옵니다)\n" + "\n".join(lines))
         state["last_summary_ts"] = now
     state["active_prev"] = list(active)
     return msgs
@@ -438,9 +523,13 @@ def _send_watch(msgs: list, send: bool):
 
 def build_heartbeat(outcome_text: str = "") -> str:
     conds = " / ".join(f"{fmt_window(m)} {t:.1f}%↑" for m, t in CFG["windows"])
+    cond_line = (f"조건: 24시간 저→고 +{CFG['pf_pump']*100:.0f}%↑ 후 고점 대비 -{CFG['pf_roll_pct']:.0f}~-{CFG['pf_max_drop_pct']:.0f}% & 유동성(깊이·스프레드) 통과"
+                 if CFG["pf_alert"] else "")
+    if CFG["surge_alert"]:
+        cond_line += ("\n" if cond_line else "") + f"조건: {conds} & 거래량 {CFG['min_vol_ratio']}x↑(100분 대비) / {CFG['min_vol_ratio_24h']}x↑(24시간 평균 대비)"
     return (f"🔍 <b>스캔 진행중</b>\n"
             f"{kst_now()}\n"
-            f"조건: {conds} & 거래량 {CFG['min_vol_ratio']}x↑(100분 대비) / {CFG['min_vol_ratio_24h']}x↑(24시간 평균 대비)\n"
+            f"{cond_line}\n"
             f"{('알림 사후 결과: ' + outcome_text + chr(10)) if outcome_text else ''}"
             f"({CFG['heartbeat_hours']}시간 간격으로 알립니다)")
 
@@ -467,6 +556,7 @@ def run_check(send: bool = True):
     print(f"  전체 {len(tickers)}종목 중 감시 대상 {n_elig}종목 "
           f"(24h 거래대금 {fmt_big(CFG['min_vol_usdt'])}+), history {depth:.0f}분 축적")
 
+    outcomes = load_outcomes()
     hb_hours = CFG["heartbeat_hours"]
     if hb_hours and now - state.get("last_heartbeat", 0) >= hb_hours * 3600:
         if send:
@@ -475,11 +565,10 @@ def run_check(send: bool = True):
         else:
             print("  [--check] 생존 알림('스캔 진행중') 발송 시점 — 발송 생략")
 
-    outcomes = load_outcomes()
     if send:
         update_outcomes(outcomes, tickers, now)
-    cands = find_candidates(state, tickers, now)
-    if not cands:
+    cands = find_candidates(state, tickers, now) if CFG["surge_alert"] else []
+    if not cands and CFG["surge_alert"]:
         first = min(m for m, _ in CFG["windows"])
         print("  후보 없음 (급등 구간 기준 미달)" if depth >= first
               else f"  history 축적 중 — 약 {first}분 뒤부터 감지 시작")
@@ -514,6 +603,11 @@ def run_check(send: bool = True):
             alerts.append((c, ratio, ratio24, ex))
             state.setdefault("alerted", {})[sym] = {"ts": now, "price": c["price"]}
             if send: record_alert(outcomes, c, ratio, ratio24, ex, now)
+
+    if CFG["pf_alert"]:
+        for item in pf_scan(state, tickers, now, t0):
+            alerts.append(item)
+            if send: record_alert(outcomes, item[0], None, None, item[3], now)
 
     watch_msgs = build_watch_messages(state, tickers, now, [a[0]["symbol"] for a in alerts]) if send else []
     # 24시간 지난 알림 기록 정리
