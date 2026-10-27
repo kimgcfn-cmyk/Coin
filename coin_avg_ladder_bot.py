@@ -34,7 +34,7 @@ CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
                ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0), ("deep_rebound_pct", 0.0), ("deep_from_stage", 3), ("trend_hold", False), ("trend_window_min", 30), ("trend_gain_pct", 3.0),
-               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
+               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -131,6 +131,19 @@ def step(state, price, now, order_fn, log, notify=None):
                         st.update(qty=0.0, hold=0.0, avg=0.0, bs=0, ss=0, stopped=0, full=False, want_re=bool(CFG["reinvest_usdt"]))
                         for k_ in ("trend", "t_peak"): st.pop(k_, None)
                     return ev
+    # ⓪-1 노출 축소: 보유가 derisk_hold_usdt 이상이면 평균단가 수익선을 기다리지 않고, 직전 5분 평균가 대비 롱 +derisk_pct% / 숏 −derisk_pct% 움직일 때마다
+    #      derisk_usdt씩 줄인다(손실 구간이어도 실행, 2026-10-27 사용자 제안).
+    if CFG.get("derisk_hold_usdt") and st["qty"] > 1e-12 and st["hold"] >= float(CFG["derisk_hold_usdt"]) and len(prev) >= max(3, CFG["ref_min"] - 1):
+        mv = (price / ref - 1) * 100 * (1 if L else -1)
+        uw = (1 - price / st["avg"]) * 100 * (1 if L else -1)           # 평균단가 대비 불리한 정도(%)
+        if mv >= float(CFG.get("derisk_pct") or 1.0) and uw >= float(CFG.get("derisk_underwater_pct") or 0):
+            qq = min(st["qty"], float(CFG["derisk_usdt"]) / price)
+            if do_out(qq, f"노출 축소 (5분 평균 대비 {'+' if L else '-'}{mv:.1f}%)"):
+                st["bs"] = max(0, st["bs"] - 1); st["ss"] = 0; st["full"] = False; st["stopped"] = 0
+                if CFG.get("derisk_block_min"): st["derisk_block_until"] = now + CFG["derisk_block_min"] * 60      # 줄인 뒤 같은 방향 신규 진입을 잠시 막는다
+                if st["qty"] <= 1e-12:
+                    st.update(qty=0.0, hold=0.0, avg=0.0, bs=0, ss=0)
+            return ev
     # ① 수익실현으로 비었으면 재투입
     if st["want_re"] and st["qty"] <= 1e-12 and not moved and (not CFG["reinvest_cond"] or ((price < ref) if L else (price > ref))):
         if do_in(float(CFG["reinvest_usdt"]), "재투입"):
@@ -158,7 +171,7 @@ def step(state, price, now, order_fn, log, notify=None):
     if dr and can_in and st["qty"] > 1e-12 and st["bs"] + 1 >= int(CFG.get("deep_from_stage", 3)):      # 깊은 단계는 직전 crash_window_min분 저점(롱)/고점(숏)에서 dr% 되돌린 뒤에만 진입
         if not ((price >= min(win) * (1 + dr / 100)) if L else (price <= max(win) * (1 - dr / 100))):
             can_in = False
-    if can_in and not moved and st["bs"] < nst and st["hold"] + u <= cap and st["stopped"] == 0:
+    if can_in and not moved and st["bs"] < nst and st["hold"] + u <= cap and st["stopped"] == 0 and now >= st.get("derisk_block_until", 0):
         if do_in(u, f"사다리 {st['bs'] + 1}단계"):
             st["bs"] += 1; st["ss"] = 0
             if st["bs"] >= nst or st["hold"] + u > cap:
