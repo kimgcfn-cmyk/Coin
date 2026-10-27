@@ -101,6 +101,15 @@ def run_check(send=True):
         if send: g.save_state(state)
         return
     t, hist = _hist(state, price)
+    if state.get("rest_until"):                      # 저점 +trail% 전량 청산 뒤 휴식(롱 봇 trail_rest_min의 거울, 2026-10-27)
+        if time.time() < state["rest_until"]:
+            print(f"  😴 청산 후 휴식 중 — {max(0, int((state['rest_until'] - time.time()) / 60))}분 남음 ({state.get('rest_reason', '')})")
+            if send: g.save_state(state)
+            return
+        for k_ in ("rest_until", "rest_reason", "rally_on", "rally_high", "rally_high_t", "buy_paused", "crash_chase", "crash_low", "crash_k", "crash_base", "crash_below_n"): state.pop(k_, None)
+        state.update(reference_price=price, trough_price=price, last_entry_price=None)
+        print(f"  ▶️ 휴식 끝 — 기준가·저점을 현재가 {price:,.6g}로 새로 잡고 자동 재개")
+        _send(f"▶️ <b>{CFG['symbol']} 숏 봇 자동 재개</b>\n휴식이 끝나 기준가·저점을 현재가 {price:,.6g}로 새로 잡습니다.", send)
     if 0 < state.get("qty", 0.0) * price < 0.05:          # 부동소수점 잔량(예: 1e-11개)이 남으면 '숏 있음'으로 보고 0수량 환매를 반복하므로 가치 5센트 미만은 0으로 정리한다 (2026-10-27)
         state["qty"] = 0.0; state["holdings_usdt"] = 0.0
     qty = state.get("qty", 0.0); msg = None
@@ -326,6 +335,27 @@ def run_check(send=True):
         if state.get("qty", 0.0) <= 0:
             state.pop("buy_paused", None); state.update(trough_price=price, reference_price=price)
             print("  ▶️ 숏 물량 모두 환매 — 신규 숏 재개"); _send(f"▶️ <b>{CFG['symbol']} 신규 숏 재개</b>\n숏을 모두 환매했습니다. 기준가·저점을 현재가 {price:,.6g}로 새로 잡습니다.", send)
+    elif CFG.get("trail_action") == "liquidate" and CFG.get("trail_exit_pct") and state.get("qty", 0.0) > 0 and price >= trough * (1 + CFG["trail_exit_pct"] / 100):
+        have_ = state["qty"]
+        print(f"  🚨 저점 {trough:,.6g} 대비 +{(price/trough-1)*100:.1f}% — 전량 환매 조건 ({CFG['trail_exit_pct']:g}%)")
+        ok, detail, q, info = _cover_order(price, 0, send, qty=have_)
+        if ok:
+            aq = info.get("filled_qty", have_); fp = info.get("avg_price", price); avg_b = state.get("avg_cost") or fp
+            tp_note_ = g.pair_take_profit(1.0, price, send, "저점 +%g%% 청산" % CFG["trail_exit_pct"])
+            _cover(state, aq, fp, info.get("fee")); state.update(qty=max(0.0, have_ - aq), holdings_usdt=0.0)
+            rest_ = CFG.get("trail_rest_min") or 0
+            if rest_: state.update(rest_until=time.time() + rest_ * 60, rest_reason=f"저점 {trough:,.6g} 대비 +{CFG['trail_exit_pct']:g}% 청산")
+            else: state.update(halted=True, halted_reason=f"저점 {trough:,.6g} 대비 +{CFG['trail_exit_pct']:g}% 청산")
+            for k_ in ("crash_chase", "crash_low", "crash_k", "crash_base", "crash_below_n", "rally_on", "rally_high", "rally_high_t"): state.pop(k_, None)
+            print(f"  🚨 전량 환매 완료: {detail}")
+            msg = _msg(state, f"🚨 <b>{CFG['symbol']} 저점 대비 +{CFG['trail_exit_pct']:g}% 숏 전량 환매 후 {'%d분 휴식' % rest_ if rest_ else '정지'}</b>\n📉 저점 {trough:,.6g} → 현재가 {price:,.6g} (+{(price/trough-1)*100:.1f}%)\n📦 환매 {aq:.6f}개 @ {fp:,.6g} (평균 진입가 {avg_b:,.6g})\n{detail}{tp_note_}\n" + (f"{rest_}분 뒤 기준가·저점을 현재가로 새로 잡고 자동 재개합니다." if rest_ else "봇은 정지되었습니다. 재개: coin_grid_short_bot.py --symbol … --resume"), price)
+        else:
+            print(f"  ❌ 전량 환매 실패: {detail}")
+            if g.no_position_error(detail): msg = g.zero_book(state, "저점 청산 환매가 거절됨(25227).")
+            elif not state.get("fail_notified"): msg = f"❌ <b>{CFG['symbol']} 숏 전량 환매 실패</b>\n{detail}\n다음 점검에서 재시도됩니다"; state["fail_notified"] = True
+        if send:
+            g.save_state(state); _send(msg, send)
+        return
     elif CFG.get("trail_exit_pct") and state.get("qty", 0.0) > 0 and price >= trough * (1 + CFG["trail_exit_pct"] / 100):
         state["buy_paused"] = True
         print(f"  ⏸️ 저점 {trough:,.6g} 대비 +{(price/trough-1)*100:.1f}% — 신규 숏 중단, 보유 숏만 환매")
