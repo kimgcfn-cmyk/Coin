@@ -76,7 +76,7 @@ def run(path):
             import datetime as _d
             def DATEVALUE(x): return (_d.date.fromisoformat(x)-_d.date(1899,12,30)).days
             def TIMEVALUE(x): hh,mm=x.split(':'); return (int(hh)*60+int(mm))/1440
-            env=dict(DATEVALUE=DATEVALUE,TIMEVALUE=TIMEVALUE,LEFT=lambda x,n:str(x)[:n],MID=lambda x,a,n:str(x)[a-1:a-1+n],C=C,SH=sh,RNG=RNG,N=N,ROUND=lambda x,n:round(x,n),SUM=SUM,COUNTIF=COUNTIF,COUNTIFS=COUNTIFSX,SUMIFS=SUMIFSX,LOOKUP=LOOKUP,IFERROR=lambda f,d:d)
+            MAXF=lambda *a: max([x for y in a for x in (y if isinstance(y,list) else [y]) if isinstance(x,(int,float)) and not isinstance(x,bool)] or [0]); env=dict(MAX=MAXF,DATEVALUE=DATEVALUE,TIMEVALUE=TIMEVALUE,LEFT=lambda x,n:str(x)[:n],MID=lambda x,a,n:str(x)[a-1:a-1+n],C=C,SH=sh,RNG=RNG,N=N,ROUND=lambda x,n:round(x,n),SUM=SUM,COUNTIF=COUNTIF,COUNTIFS=COUNTIFSX,SUMIFS=SUMIFSX,LOOKUP=LOOKUP,IFERROR=lambda f,d:d)
             expr=to_py(v)
             try:
                 if "IFERROR" in expr: raise RuntimeError

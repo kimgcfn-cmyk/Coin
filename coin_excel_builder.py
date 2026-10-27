@@ -309,7 +309,8 @@ def build_pair(path, name, long_args, short_args, now_kst=None, intro="", pair_s
     m = wb.create_sheet("합산 추이")
     m["A1"] = f"{name} 롱+숏 합산 추이 — 체결 순서대로 누적 순손익"; m["A1"].font = f_title
     m["A2"] = "롱·숏 거래내역의 순손익(수수료 후)을 시간순으로 합쳐 롱 누적, 숏 누적, 합계 누적을 보여줍니다. 진입 행은 손익 0이고 청산 행에서 손익이 확정됩니다."; m["A2"].font = f_note
-    heads = ["No", "일시(KST)", "롱/숏", "내용", "체결 순손익(USDT)", "롱 누적(USDT)", "숏 누적(USDT)", "합계 누적(USDT)", "경과시간(시간)"]
+    heads = ["No", "일시(KST)", "롱/숏", "내용", "체결 순손익(USDT)", "롱 누적(USDT)", "숏 누적(USDT)", "합계 누적(USDT)", "경과시간(시간)",
+             "롱 고점", "롱 낙폭", "숏 고점", "숏 낙폭", "합계 고점", "합계 낙폭"]
     HR = 4
     for j, h in enumerate(heads, 1):
         c = m.cell(HR, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
@@ -326,14 +327,31 @@ def build_pair(path, name, long_args, short_args, now_kst=None, intro="", pair_s
         m.cell(x, 7, f'=N(G{p})+IF($C{x}="숏",$E{x},0)')
         m.cell(x, 8, f"=F{x}+G{x}")
         m.cell(x, 9, f"=ROUND((DATEVALUE(LEFT($B{x},10))+TIMEVALUE(MID($B{x},12,5))-DATEVALUE(LEFT($B${mfirst},10))-TIMEVALUE(MID($B${mfirst},12,5)))*24,4)")
-        for j in range(1, 10):
+        for c_, src_ in ((10, "F"), (12, "G"), (14, "H")):                       # 고점(처음 0 포함)과 낙폭
+            m.cell(x, c_, f"=MAX(N({L(c_)}{p}),{src_}{x},0)"); m.cell(x, c_ + 1, f"={L(c_)}{x}-{src_}{x}")
+        for j in range(1, 16):
             c = m.cell(x, j); c.font = f_green if j == 8 else f_norm; c.border = box
             if j in (1, 3): c.alignment = Alignment(horizontal="center")
             if j == 5 and False: pass
-        for j in (5, 6, 7, 8): m.cell(x, j).number_format = "0.0000;[Red]-0.0000;-"
+        for j in (5, 6, 7, 8, 10, 11, 12, 13, 14, 15): m.cell(x, j).number_format = "0.0000;[Red]-0.0000;-"
         m.cell(x, 9).number_format = "0.00"
-    mlast = mfirst + max(len(ev), 1) - 1
-    for j, w in enumerate([5, 17, 7, 34, 15, 15, 15, 15, 13], 1): m.column_dimensions[L(j)].width = w
+    # 마지막 '현재(미실현 포함)' 행: 실현 누적에 현재 미실현을 더한 총 순손익으로 마무리해 현재 시점의 낙폭까지 반영한다
+    x = mfirst + len(ev); p = x - 1
+    m.cell(x, 1, len(ev) + 1); m.cell(x, 2, "현재"); m.cell(x, 3, "—"); m.cell(x, 4, "현재(미실현 포함)")
+    m.cell(x, 6, "='롱 요약'!B24"); m.cell(x, 7, "='숏 요약'!B24"); m.cell(x, 8, f"=F{x}+G{x}")
+    try:        # 현재 시점의 경과시간(시간) — 그래프의 마지막 점에 쓴다
+        import datetime as _dt
+        t0_ = min(e_[0] for e_ in ev) if ev else None
+        if t0_ and now_kst:
+            m.cell(x, 9, round(max(0.0, (_dt.datetime.strptime(now_kst, "%Y-%m-%d %H:%M") - _dt.datetime.strptime(t0_, "%Y-%m-%d %H:%M")).total_seconds() / 3600), 2))
+    except Exception: pass
+    for c_, src_ in ((10, "F"), (12, "G"), (14, "H")):
+        m.cell(x, c_, f"=MAX(N({L(c_)}{p}),{src_}{x},0)"); m.cell(x, c_ + 1, f"={L(c_)}{x}-{src_}{x}")
+    for j in range(1, 16):
+        c = m.cell(x, j); c.font = f_bold; c.border = box; c.fill = PatternFill("solid", fgColor="E2EFDA")
+        if j in (5, 6, 7, 8, 10, 11, 12, 13, 14, 15): c.number_format = "0.0000;[Red]-0.0000;-"
+    mlast = mfirst + len(ev)
+    for j, w in enumerate([5, 17, 7, 34, 15, 15, 15, 15, 13, 11, 11, 11, 11, 11, 11], 1): m.column_dimensions[L(j)].width = w
     m.freeze_panes = m.cell(mfirst, 3)
     # ── 합계 요약 ──
     z = wb.create_sheet("합계 요약")
@@ -371,15 +389,19 @@ def build_pair(path, name, long_args, short_args, now_kst=None, intro="", pair_s
     add("unr", "미실현 순손익 수수료 후 (USDT)", 23)
     add("tot", "총 순손익 (실현+미실현, USDT)", 24, bold=True)
     add("tr", "총 수익률 (기준 자본 대비)", None, "0.00%;[Red]-0.00%", lf=f"=B{r['tot']}/B{r['cap']}", sf=f"=C{r['tot']}/C{r['cap']}", tf=f"=D{r['tot']}/D{r['cap']}", bold=True)
+    mx = lambda col: f"=MAX('합산 추이'!{col}{mfirst}:{col}{mlast})"
+    add("mdd", "MDD — 고점 대비 최대 낙폭 (USDT)", None, "0.0000", lf=mx("K"), sf=mx("M"), tf=mx("O"), bold=True)
+    add("mddp", "MDD (기준 자본 대비 %)", None, "0.0%", lf=f"=B{r['mdd']}/B{r['cap']}", sf=f"=C{r['mdd']}/C{r['cap']}", tf=f"=D{r['mdd']}/D{r['cap']}", bold=True)
     add("h12", "최근 12시간 실현 순손익 (USDT)", 28, "0.0000;[Red]-0.0000;-")
     add("h24", "최근 24시간 실현 순손익 (USDT)", 31, "0.0000;[Red]-0.0000;-")
-    for k in ("real", "tot", "tr"):
+    for k in ("real", "tot", "tr", "mddp"):
         for j in range(1, 5): z.cell(r[k], j).fill = PatternFill("solid", fgColor="E2EFDA")
     z.column_dimensions["A"].width = 44
     for col in "BCD": z.column_dimensions[col].width = 16
     nr = 4 + len(rows) + 1
     z.cell(nr, 1, "※ 보유 명목금액 합계는 롱(+)과 숏(−)이 상쇄된 순노출입니다. 기준 자본은 롱·숏 각각의 한도÷레버리지를 더한 값입니다.").font = f_note
-    z.cell(nr + 1, 1, "※ 과거 결과일 뿐이며 투자 조언이 아닙니다.").font = f_note
+    z.cell(nr + 1, 1, "※ MDD는 체결 시점의 실현 손익 곡선(처음 0 포함)과 마지막 '현재(미실현 포함)' 점에서 고점 대비 최대 하락폭입니다. 체결과 체결 사이의 평가손실은 반영되지 않아 실제 최악 낙폭보다 작을 수 있습니다.").font = f_note
+    z.cell(nr + 2, 1, "※ 과거 결과일 뿐이며 투자 조언이 아닙니다.").font = f_note
     # 합산 추이 그래프 (롱·숏·합계 누적 순손익)
     ch = ScatterChart(); ch.title = "누적 순손익 — 롱·숏·합계 (수수료 후, USDT)"; ch.style = 2
     ch.x_axis.title = "경과시간 (시간, 첫 체결 기준)"; ch.y_axis.title = "누적 순손익 (USDT)"
