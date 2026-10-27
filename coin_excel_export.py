@@ -223,7 +223,7 @@ def fetch_remote():
     names = " ".join(v[0] for v in BOTS.values())
     cmd = ("cd /home/ec2-user/trading-bot && for n in %s; do echo \"##LOG $n\"; "
            "for f in $(ls -tr logs/$n.log* 2>/dev/null); do zcat -f \"$f\" | grep -E \"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{5} UTC|체결 완료 \\(주문ID\"; done; "
-           "echo \"##STATE $n\"; cat ${n}_state.json 2>/dev/null; echo; done; echo \"##SHADOW cap\"; cat coin_grid_cap_shadow.json 2>/dev/null; echo; echo \"##OUTCOME surge\"; cat coin_surge_outcomes.json 2>/dev/null; echo") % names
+           "echo \"##STATE $n\"; cat ${n}_state.json 2>/dev/null; echo; done; echo \"##SHADOW cap\"; cat coin_grid_cap_shadow.json 2>/dev/null; echo; echo \"##OUTCOME surge\"; cat coin_surge_outcomes.json 2>/dev/null; echo; echo \"##OUTCOME pf\"; cat coin_pumpfade_events.json 2>/dev/null; echo") % names
     r = subprocess.run(SSH + [cmd], capture_output=True, text=True, timeout=90)
     if r.returncode != 0 and not r.stdout:
         raise RuntimeError("서버 로그를 읽지 못했습니다: " + r.stderr.strip()[:200])
@@ -446,6 +446,11 @@ def main():
         save_atomic(os.path.join(out, f"{tag}_롱숏합동전략_수익률.xlsx"), lambda p, la=side_args("long", fl, pl), sa=side_args("short", fs, ps), st_=st_, tag=tag: b.build_pair(
             p, tag, la, sa, now_kst=now, pair_strategy=st_, pair_title=f"{tag} 롱숏합동전략 — 전략 요약",
             intro=f"{tag} 롱숏합동전략: 롱과 숏을 합한 값이 이 전략의 결과입니다. 롱 요약·숏 요약은 합계의 내역입니다. 마지막 갱신 {now} KST."))
+    # ── 급등 후 하락 이벤트(스캐너·모의 러너 기록) ──
+    try: pfd = json.loads("\n".join(sec.get(("OUTCOME", "pf"), [])) or "{}")
+    except Exception: pfd = {}
+    if pfd.get("events"):
+        save_atomic(os.path.join(out, "급등후하락_이벤트.xlsx"), lambda p: b.build_pumpfade_workbook(p, pfd["events"], now))
     # ── 급등 알림 사후 추적 ──
     try: surge = json.loads("\n".join(sec.get(("OUTCOME", "surge"), [])) or "{}")
     except Exception: surge = {}

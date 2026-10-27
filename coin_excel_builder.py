@@ -570,3 +570,82 @@ def build_surge_workbook(path, alerts, ref_rows):
     ws.freeze_panes = ws.cell(first, 4)
     wb.calculation.fullCalcOnLoad = True
     wb.save(path)
+
+
+def build_pumpfade_workbook(path, events, now_kst):
+    """급등 후 하락 이벤트 기록: 이벤트 시트(종료 이벤트가 위, 진행 중이 아래)와 요약 시트(수식)."""
+    import datetime as _dt
+    KST = _dt.timezone(_dt.timedelta(hours=9))
+    wb = Workbook(); sm = wb.active; sm.title = "요약"; ev = wb.create_sheet("이벤트"); ex = wb.create_sheet("설명")
+    heads = ["신호 시각(KST)", "종목", "24h 저→고 상승(%)", "신호가", "24h 변동(%)", "거래대금(M USDT)", "펀딩(%)", "상태", "경과(시간)",
+             "W 수익률(%)", "W MDD(%)", "W 순손익(USDT)", "PW 수익률(%)", "PW MDD(%)", "PW 순손익(USDT)", "W 손절", "PW 손절", "비고"]
+    ev["A1"] = "급등 후 하락 이벤트 — 모의(paper) 결과"; ev["A1"].font = f_title
+    ev["A2"] = "W = 숏 단독(넓은 사다리 3/6/3, 한도 300, 기준 자본 60) · PW = 롱숏 합동(같은 사다리, 기준 자본 120). 신호 시점부터 24시간 모의. 진행 중 이벤트는 현재 값입니다."; ev["A2"].font = f_note
+    for j, h in enumerate(heads, 1):
+        c = ev.cell(4, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
+    ev.row_dimensions[4].height = 36
+    done = sorted([e for e in events if e.get("status") == "done"], key=lambda e: e["ts"])
+    rest = sorted([e for e in events if e.get("status") != "done"], key=lambda e: e["ts"])
+    now_ts = _dt.datetime.now(KST).timestamp()
+    r = 5
+    for e in done + rest:
+        res = e.get("res") or {}; cur = (e.get("curve") or [[0, 0, 0, 0]])[-1]
+        isd = e.get("status") == "done"
+        age = round(((e.get("end_ts") or now_ts) - e["ts"]) / 3600, 1)
+        vals = [_dt.datetime.fromtimestamp(e["ts"], KST).strftime("%Y-%m-%d %H:%M"), e["sym"], e["pump"], e["entry"], round(e.get("chg24", 0), 1), round(e.get("vol24", 0) / 1e6, 1), round(e.get("fund", 0), 3),
+                "종료" if isd else ("진행" if e.get("status") == "active" else "생략"), age]
+        if isd:
+            vals += [res["W"]["pct"], res["W"]["mdd_pct"], res["W"]["pnl"], res["PW"]["pct"], res["PW"]["mdd_pct"], res["PW"]["pnl"], res["W"]["stops"], res["PW"]["stops"], ""]
+        elif e.get("status") == "active":
+            vals += [round(cur[1] / 60 * 100, 1), None, cur[1], round(cur[2] / 120 * 100, 1), None, cur[2], None, None, "진행 중(현재 값)"]
+        else:
+            vals += [None] * 8 + [e.get("note", "")]
+        for j, v in enumerate(vals, 1):
+            c = ev.cell(r, j, v); c.font = f_norm; c.border = box
+            if j in (9, 10, 11, 12, 13, 14, 15) and v is not None: c.number_format = "0.0;[Red]-0.0"
+            if j in (4,): c.number_format = "0.0000000"
+        r += 1
+    d0, d1 = 5, 4 + len(done)
+    for j, w in enumerate([17, 14, 12, 12, 10, 12, 8, 6, 8, 11, 10, 12, 11, 10, 12, 8, 8, 28], 1): ev.column_dimensions[L(j)].width = w
+    ev.freeze_panes = "C5"
+    sm["A1"] = "급등 후 하락 전략 — 모의 이벤트 요약"; sm["A1"].font = f_title
+    sm["A2"] = f"종료된 이벤트 기준(수식은 '이벤트' 시트의 종료 구간을 참조). 갱신 {now_kst} KST. 진행 중 {sum(1 for e in events if e.get('status') == 'active')}건."; sm["A2"].font = f_note
+    for j, h in enumerate(["항목", "W (숏 단독)", "PW (롱숏 합동)"], 1):
+        c = sm.cell(4, j, h); c.font = f_head; c.fill = fill_head; c.alignment = ctr; c.border = box
+    n = len(done)
+    rng = lambda col: f"이벤트!${col}${d0}:${col}${d1}" if n else None
+    rows = [("종료 이벤트 수", n, n, "0"),
+            ("승률 (수익률>0)", f'=COUNTIF({rng("J")},">0")/{n}' if n else "-", f'=COUNTIF({rng("M")},">0")/{n}' if n else "-", "0%"),
+            ("평균 수익률 (%)", f"=AVERAGE({rng('J')})" if n else "-", f"=AVERAGE({rng('M')})" if n else "-", "0.0;[Red]-0.0"),
+            ("중앙 수익률 (%)", f"=MEDIAN({rng('J')})" if n else "-", f"=MEDIAN({rng('M')})" if n else "-", "0.0;[Red]-0.0"),
+            ("최악 수익률 (%)", f"=MIN({rng('J')})" if n else "-", f"=MIN({rng('M')})" if n else "-", "0.0;[Red]-0.0"),
+            ("최고 수익률 (%)", f"=MAX({rng('J')})" if n else "-", f"=MAX({rng('M')})" if n else "-", "0.0;[Red]-0.0"),
+            ("평균 MDD (%)", f"=AVERAGE({rng('K')})" if n else "-", f"=AVERAGE({rng('N')})" if n else "-", "0.0"),
+            ("최대 MDD (%)", f"=MAX({rng('K')})" if n else "-", f"=MAX({rng('N')})" if n else "-", "0.0"),
+            ("합계 순손익 (USDT)", f"=SUM({rng('L')})" if n else "-", f"=SUM({rng('O')})" if n else "-", "0.0;[Red]-0.0"),
+            ("손절 합계", f"=SUM({rng('P')})" if n else "-", f"=SUM({rng('Q')})" if n else "-", "0")]
+    for i, (lab, w_, pw_, fmt) in enumerate(rows):
+        rr = 5 + i; sm.cell(rr, 1, lab).font = f_bold if i in (2, 3) else f_norm
+        for j, v in ((2, w_), (3, pw_)):
+            c = sm.cell(rr, j, v); c.font = f_bold if i in (2, 3) else f_norm; c.number_format = fmt; c.border = box
+        sm.cell(rr, 1).border = box
+    sm.column_dimensions["A"].width = 28; sm.column_dimensions["B"].width = 18; sm.column_dimensions["C"].width = 18
+    sm["A17"] = "참고: 일괄 재생 모의(과거 56건, 신호 후 24시간)"; sm["A17"].font = f_bold
+    ref = [("설정", "승률", "평균", "중앙", "평균 MDD", "합계 USDT"),
+           ("P 합동 좁은 사다리 (현행 설정)", "36%", "−8.7%", "−4.0%", "26.7%", "−587"), ("S 숏 단독 좁은 사다리", "62%", "−0.7%", "+9.9%", "60.5%", "−24"),
+           ("W 숏 단독 넓은 사다리(3/6/3)", "68%", "+6.1%", "+12.5%", "48.8%", "+206"), ("PW 합동 넓은 사다리(3/6/3)", "46%", "+0.7%", "−0.2%", "18.5%", "+47")]
+    for i, row in enumerate(ref):
+        for j, v in enumerate(row, 1):
+            c = sm.cell(18 + i, j, v); c.border = box; c.font = f_head if i == 0 else f_norm
+            if i == 0: c.fill = fill_head; c.alignment = ctr
+    sm["A24"] = "※ 모의(paper) 결과이며 실제 주문이 아닙니다. 과거·가상 결과일 뿐 투자 조언이 아닙니다."; sm["A24"].font = f_note
+    ex["A1"] = "전략 설명"; ex["A1"].font = f_title
+    lines = ["· 신호: 24시간 안에 저→고 +30% 이상 오른 뒤 고점 대비 4% 이상 내려온 종목(24h 변동 +20% 이상, 거래대금 3M 이상 후보 중). 5분마다 스캔.",
+             "· 모의 운용: 신호 즉시 W(숏 단독)와 PW(롱+숏 합동)를 24시간 모의로 돌립니다. 사다리: 진입은 60분 평균 대비 ∓3%·6%·9%…, 청산은 평균단가 ±6%·9%… (간격 3%), 한도 300, 손절 8/10/12%.",
+             "· 동시에 진행하는 이벤트는 최대 3건. 한도를 넘는 신호는 '생략'으로 기록합니다.",
+             "· 24시간이 지나면 현재가로 평가해 '종료'로 기록하고, 수익률은 기준 자본(W 60, PW 120) 대비입니다. MDD는 1분 단위 누적 손익 곡선의 고점 대비 최대 낙폭입니다.",
+             "· 일괄 재생 모의에서 단순 손절 숏은 기대값이 음수였고(승률 24~49%), 넓은 사다리 변형(W, PW)만 나았습니다. 표본이 작아 방향만 참고하세요."]
+    for i, t in enumerate(lines): ex.cell(3 + i, 1, t).font = f_norm
+    ex.column_dimensions["A"].width = 160
+    wb.calculation.fullCalcOnLoad = True
+    wb.save(path)
