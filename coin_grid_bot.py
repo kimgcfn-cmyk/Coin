@@ -1278,6 +1278,11 @@ def _normalize_symbol(x: str) -> str:
     base = x[:-4] if x.endswith("USDT") else x
     return f"{base}/USDT:USDT"
 
+def _tag():
+    """프리셋에 state_tag가 있으면 상태 파일 이름에 붙인다(같은 종목의 모의 봇이 실전 봇 장부·엑셀과 섞이지 않게, 2026-10-27)."""
+    if CFG.get("state_tag") and CFG.get("state_file"):
+        CFG["state_file"] = CFG["state_file"].replace("_state.json", f"_{CFG['state_tag']}_state.json")
+
 def _apply_cli(args: list):
     """--preset 이름 / --symbol / --live / --set k=v 를 CFG에 반영. 반환: 종목이 지정됐는지.
     프리셋은 coin_grid_presets/<이름>.json (이전에 쓰던 종목별 설정을 보관). --symbol 이 있으면 프리셋 종목보다 우선한다."""
@@ -1309,6 +1314,7 @@ def _apply_cli(args: list):
                 CFG[k] = v
     if "--live" in args:
         CFG["auto_trade"] = True
+    _tag()
     return bool(CFG["symbol"])
 
 if __name__ == "__main__":

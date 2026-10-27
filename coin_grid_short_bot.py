@@ -360,6 +360,7 @@ def main():
     if not g._apply_cli(args):
         print("  ❌ 종목을 지정하세요: python coin_grid_short_bot.py --symbol ABC [--check|--status|--live ...]"); sys.exit(1)
     base = CFG["symbol"].split("/")[0].lower(); CFG["state_file"] = f"coin_grid_short_{base}_state.json"
+    g._tag()
     if "--reset" in args:
         if os.path.exists(CFG["state_file"]): os.remove(CFG["state_file"])
         print("  ✅ 숏 그리드 상태 초기화 완료 (실제 포지션은 그대로)"); return
