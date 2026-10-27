@@ -277,6 +277,28 @@ def balance_line():
         return ""
 
 
+def prefill_hist(state, now=None):
+    """시작 직후 대기 시간 제거(2026-10-27): 시세 기록(ref_hist)이 진입 기준(entry_ref_min분 평균)·급변 감지에 필요한 길이보다 짧으면
+    Bitget 공개 1분봉 종가로 과거 기록을 미리 채운다. 기존 기록보다 오래된 구간만 채우고, 조회에 실패하면 아무것도 하지 않는다(예전처럼 쌓일 때까지 대기)."""
+    import requests
+    now = now or time.time()
+    need = max(int(CFG.get("entry_ref_min") or 0), int(CFG.get("ref_min") or 5)) * 60 + 60
+    hist = state.get("ref_hist") or []
+    first = min((h[0] for h in hist), default=now)
+    if now - first >= need: return 0
+    try:
+        sym = CFG["symbol"].split("/")[0] + "USDT"
+        r = requests.get("https://api.bitget.com/api/v2/mix/market/candles", params={"symbol": sym, "productType": "USDT-FUTURES", "granularity": "1m", "limit": "120"}, timeout=10).json()
+        rows = sorted((int(x[0]) / 1000 + 60, float(x[4])) for x in (r.get("data") or []))      # (봉 마감 시각, 종가)
+    except Exception as e:
+        print(f"  ⚠️ 과거 시세 미리 채우기 실패({type(e).__name__}) — 기록이 쌓일 때까지 대기"); return 0
+    add = [[t, p] for t, p in rows if t < first - 20 and t <= now - 30 and now - t <= need + 600]
+    if add:
+        state["ref_hist"] = add + hist
+        print(f"  ⏩ 과거 1분봉 {len(add)}개로 시세 기록을 미리 채웠습니다(시작 직후 대기 없음)")
+    return len(add)
+
+
 def run_check(send=True):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"\n{'=' * 56}\n  코인 평균단가 사다리 봇 — {CFG['symbol']} {'롱' if CFG['side'] == 'long' else '숏'} — {now}{' [모의]' if CFG.get('paper') else ''}\n{'=' * 56}")
@@ -293,6 +315,7 @@ def run_check(send=True):
             CFG["_acct_block"] = True
             print(f"  🚦 계좌 총 명목 {gross:,.0f}USDT ≥ 총자산 {eq:,.0f}USDT × {CFG['acct_max_ratio']:g}배 — 신규 진입 중단(청산·손절은 그대로)")
     order_fn = lambda side, usdt, p, ro, qty: g.place_order(CFG["symbol"], side, usdt, p, reduce_only=ro, dry_run=not send, qty_override=qty)
+    prefill_hist(state)
     step(state, price, time.time(), order_fn, print, notify=(lambda m: g.send_discord(m + balance_line())) if (send and not CFG.get("paper")) else None)
     if send: g.save_state(state)
 
