@@ -20,7 +20,10 @@ BOTS = {"T": ("coin_grid_short_t", "TUSDT"), "ORDER": ("coin_grid_short_order", 
         "HD_Q_L": ("coin_hd_q_long", "QUSDT"), "HD_Q_S": ("coin_hd_q_short", "QUSDT"),            # 롱숏합동전략 (2026-10-27 11:21 KST 실전)
         "HD_CAP_L": ("coin_hd_cap_long", "CAPUSDT"), "HD_CAP_S": ("coin_hd_cap_short", "CAPUSDT")}   # Q는 모의로 시작해 실전으로 전환 — 로그에 [모의 체결] 줄이 섞여 있어 건너뛴다   # IRYS는 모의(paper) 거래 — 실제 주문 없음
 # 로그에 없는 체결(사용자 지시로 직접 낸 청산 주문). 주문 응답 값이고 시각은 근사다.
-EXTRA = {"T": [dict(t="2026-10-25 22:47", label="수동 청산 환매", id="manual-t-close", amt=251.8573, qty=45160.0),
+EXTRA = {
+         # 11:54 사용자 지시로 Q 롱숏합동전략 중지 후 Q 포지션 시장가 전량 청산 (롱 1,495개 평균 0.20747, 숏 492개 평균 0.207467)
+         "HD_Q_L": [dict(t="2026-10-27 11:54", label="수동 청산 매도", id="manual-hd-q-long-end", amt=310.1676, qty=1495.0)],
+         "HD_Q_S": [dict(t="2026-10-27 11:54", label="수동 청산 환매", id="manual-hd-q-short-end", amt=102.0738, qty=492.0)],"T": [dict(t="2026-10-25 22:47", label="수동 청산 환매", id="manual-t-close", amt=251.8573, qty=45160.0),
                dict(t="2026-10-26 13:20", label="수동 청산 환매", id="manual-t-close2", amt=347.025, qty=70400.0)],
          # 사용자가 직접 추가한 ORDER 숏 2,230개를 봇 장부에 편입(평균가 0.042681). 로그에 없는 건이라 직접 입력, 시각은 근사
          "ORDER": [dict(t="2026-10-26 10:05", label="수동 숏 편입 진입", id="manual-order-add", amt=95.1786, qty=2230.0),
