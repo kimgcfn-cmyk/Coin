@@ -5,6 +5,7 @@
 coin_grid_bot.py 의 주문·시세·상태 도구를 그대로 쓴다(모의 체결, 슬리피지, 디스코드, 실전 주문 경로 동일).
 
 [전략 — 롱 기준, 숏은 방향만 반대(거울)]
+  0) 첫 진입: 처음 가동하면(시세 5분 기록 후) 롱·숏 모두 기다리지 않고 바로 first_entry_usdt(100 USDT)를 같이 진입한다(2026-10-27 사용자 지시).
   1) 진입 사다리: 보유가 없으면 직전 5분 평균가가 기준 → 그보다 −2% 낮을 때 100 USDT 매수. 보유 중이면 평균단가 기준으로
      −2% → −3% → −4% → −5% → −6% 단계마다 100 USDT씩 추가 매수(최대 5단계, 한도 max_total_usdt 600 안에서).
   2) 청산 사다리: 평균단가 +2% → +3% → … → +6%에서 단계마다 100 USDT씩 시장가 매도(평균가 아래에서는 팔지 않음). 남는 물량이 반 칸 미만이면 전량.
@@ -29,7 +30,7 @@ import coin_grid_bot as g
 CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
-               ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5)):
+               ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -90,6 +91,10 @@ def step(state, price, now, order_fn, log, notify=None):
         if notify: notify(f"{'🟢' if net > 0 else '🔴'} <b>{CFG['symbol']} {word_out}</b> ({why})\n순손익 {net:+.2f} USDT · 누적 {st['cum_pnl']:+.2f}")
         return True
 
+    if not st.get("started") and st["qty"] <= 1e-12 and CFG.get("first_entry_usdt"):      # 첫 진입: 롱·숏 모두 시작하자마자 같이 first_entry_usdt 진입 (2026-10-27 사용자 지시)
+        if do_in(float(CFG["first_entry_usdt"]), "첫 진입"):
+            st.update(started=True, bs=0, ss=0, full=False, stopped=0)
+        return ev
     # ① 수익실현으로 비었으면 재투입
     if st["want_re"] and st["qty"] <= 1e-12 and not moved and (not CFG["reinvest_cond"] or ((price < ref) if L else (price > ref))):
         if do_in(float(CFG["reinvest_usdt"]), "재투입"):
