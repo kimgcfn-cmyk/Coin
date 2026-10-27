@@ -16,6 +16,8 @@ coin_grid_bot.py 의 주문·시세·상태 도구를 그대로 쓴다(모의 �
   2-3) 노출 축소(derisk): 보유 derisk_hold_usdt(300) 이상 & 평균단가 대비 derisk_underwater_pct(3%) 이상 불리 & 직전 5분 평균 대비 derisk_pct(1%) 되돌림이면 derisk_usdt(100)를 청산하고
      derisk_block_min(30)분간 같은 방향 신규 진입을 막는다(2026-10-27 E 방식).
   2-4) 진입 기준 시세(entry_ref_min): 0이면 평균단가, N이면 직전 N분 평균 시세를 진입 사다리(−1~−5% / +1~+5%)의 기준으로 쓴다(CAP 2026-10-27 N=60 실전).
+  2-5) 진입 속도 제한(entry_min_gap_min): 같은 방향 사다리 진입 사이에 최소 N분(5)을 둔다. entry_gap_fast_pct>0이면 급변 중에만 적용(2026-10-27 CAP 5분 실전).
+  2-6) 헤지 보강(hedge_follow_usdt)·단계 제한(max_entry_stage)·반등 확인(deep_rebound_pct)은 모의용 옵션(기본 꺼짐).
   3) 재투입: 수익실현으로 보유가 0이 되면, 현재가가 직전 5분 평균보다 유리할 때(롱은 낮을 때, 숏은 높을 때) reinvest_usdt(100)를 바로 투입한다.
      조건이 안 맞으면 맞을 때까지 기다린다. 손절로 비었을 때는 재투입하지 않는다.
   4) 손절 3구간: 사다리가 다 찼을 때(5단계 완료 또는 한도 때문에 더 못 살 때)의 평균단가에서 −8% → −10% → −12%(숏은 +8/+10/+12%)에
@@ -37,7 +39,7 @@ CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
                ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0), ("deep_rebound_pct", 0.0), ("deep_from_stage", 3), ("trend_hold", False), ("trend_window_min", 30), ("trend_gain_pct", 3.0),
-               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("entry_ref_min", 0), ("entry_ref_mix", 0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
+               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("entry_ref_min", 0), ("max_entry_stage", 0), ("hedge_follow_usdt", 0.0), ("hedge_opp_stage", 3), ("hedge_max_usdt", 500.0), ("hedge_step_pct", 1.0), ("entry_min_gap_min", 0), ("entry_gap_fast_pct", 0.0), ("entry_ref_mix", 0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -148,6 +150,18 @@ def step(state, price, now, order_fn, log, notify=None):
                 if st["qty"] <= 1e-12:
                     st.update(qty=0.0, hold=0.0, avg=0.0, bs=0, ss=0)
             return ev
+    # ⓪-2 헤지 보강: 반대쪽 사다리가 hedge_opp_stage단계 이상이면, 이쪽(유리한 쪽)을 추세 추종으로 hedge_step_pct%씩 유리하게 움직일 때마다 hedge_follow_usdt씩 추가 진입(hedge_max_usdt까지)해
+    #      반대쪽 손실을 상쇄한다(2026-10-27 모의). 평균단가·청산 규칙은 그대로 적용된다.
+    if CFG.get("hedge_follow_usdt"):
+        if int(CFG.get("opp_bs") or 0) >= int(CFG["hedge_opp_stage"]):
+            if not st.get("hedge_ref"): st["hedge_ref"] = price
+            gain = (price / st["hedge_ref"] - 1) * (1 if L else -1) * 100
+            if gain >= float(CFG["hedge_step_pct"]) and not moved and st["hold"] + float(CFG["hedge_follow_usdt"]) <= min(cap, float(CFG["hedge_max_usdt"])):
+                if do_in(float(CFG["hedge_follow_usdt"]), "헤지 보강"):
+                    st["hedge_ref"] = price
+                return ev
+        else:
+            st.pop("hedge_ref", None)
     # ① 수익실현으로 비었으면 재투입
     if st["want_re"] and st["qty"] <= 1e-12 and not moved and (not CFG["reinvest_cond"] or ((price < ref) if L else (price > ref))):
         if do_in(float(CFG["reinvest_usdt"]), "재투입"):
@@ -185,10 +199,18 @@ def step(state, price, now, order_fn, log, notify=None):
     if dr and can_in and st["qty"] > 1e-12 and st["bs"] + 1 >= int(CFG.get("deep_from_stage", 3)):      # 깊은 단계는 직전 crash_window_min분 저점(롱)/고점(숏)에서 dr% 되돌린 뒤에만 진입
         if not ((price >= min(win) * (1 + dr / 100)) if L else (price <= max(win) * (1 - dr / 100))):
             can_in = False
-    if can_in and not moved and st["bs"] < nst and st["hold"] + u <= cap and st["stopped"] == 0 and now >= st.get("derisk_block_until", 0):
+    gap_ok = True                                       # 진입 속도 제한: entry_gap_fast_pct>0이면 최근 30분 동안 불리한 방향으로 그만큼 이상 움직인 '급변 중'에만 적용
+    if float(CFG.get("entry_min_gap_min") or 0) > 0:
+        fastv = float(CFG.get("entry_gap_fast_pct") or 0)
+        w30 = [p for t, p in hist if now - t <= 1830]
+        adverse = ((1 - price / max(w30)) if L else (price / min(w30) - 1)) * 100 if w30 else 0.0
+        if not fastv or adverse >= fastv:
+            gap_ok = now - st.get("last_in_ts", 0) >= float(CFG["entry_min_gap_min"]) * 60
+    mes = int(CFG.get("max_entry_stage") or 0)          # >0이면 진입 사다리를 이 단계까지만 허용(그 이상은 진입 막고, 그 단계가 차면 '다 참'으로 보고 손절 3구간을 켠다)
+    if can_in and not moved and st["bs"] < (min(nst, mes) if mes else nst) and st["hold"] + u <= cap and st["stopped"] == 0 and now >= st.get("derisk_block_until", 0) and gap_ok:
         if do_in(u, f"사다리 {st['bs'] + 1}단계"):
-            st["bs"] += 1; st["ss"] = 0
-            if st["bs"] >= nst or st["hold"] + u > cap:
+            st["bs"] += 1; st["ss"] = 0; st["last_in_ts"] = now
+            if st["bs"] >= (min(nst, mes) if mes else nst) or st["hold"] + u > cap:
                 st.update(full=True, q_at_full=st["qty"], avg_at_full=st["avg"])
                 log(f"  📌 사다리 완료 — 평균단가 {st['avg']:,.6g}, 손절선 " + " / ".join(f"{(st['avg'] * (1 - s / 100) if L else st['avg'] * (1 + s / 100)):,.6g}" for s in stops))
     elif can_out and st["qty"] > 1e-12 and st["ss"] < nst and ((price >= st["avg"]) if L else (price <= st["avg"])) and not (st.get("trend") and st["ss"] >= int(CFG["trend_sell_stages"])) and st["hold"] > keep_eff + 1e-9 and \
