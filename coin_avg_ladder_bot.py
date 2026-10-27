@@ -268,6 +268,15 @@ def account_exposure(max_age=45):
         return None, None
 
 
+def balance_line():
+    """디스코드 체결 알림 끝에 붙일 '현재 총잔액' 줄(총자산 accountEquity, USDT). 조회에 실패하면 빈 문자열 — 알림은 그대로 나간다."""
+    try:
+        _, eq = account_exposure(max_age=0)
+        return f"\n💰 총잔액 {eq:,.2f} USDT" if eq else ""
+    except Exception:
+        return ""
+
+
 def run_check(send=True):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     print(f"\n{'=' * 56}\n  코인 평균단가 사다리 봇 — {CFG['symbol']} {'롱' if CFG['side'] == 'long' else '숏'} — {now}{' [모의]' if CFG.get('paper') else ''}\n{'=' * 56}")
@@ -284,7 +293,7 @@ def run_check(send=True):
             CFG["_acct_block"] = True
             print(f"  🚦 계좌 총 명목 {gross:,.0f}USDT ≥ 총자산 {eq:,.0f}USDT × {CFG['acct_max_ratio']:g}배 — 신규 진입 중단(청산·손절은 그대로)")
     order_fn = lambda side, usdt, p, ro, qty: g.place_order(CFG["symbol"], side, usdt, p, reduce_only=ro, dry_run=not send, qty_override=qty)
-    step(state, price, time.time(), order_fn, print, notify=(lambda m: g.send_discord(m)) if (send and not CFG.get("paper")) else None)
+    step(state, price, time.time(), order_fn, print, notify=(lambda m: g.send_discord(m + balance_line())) if (send and not CFG.get("paper")) else None)
     if send: g.save_state(state)
 
 
