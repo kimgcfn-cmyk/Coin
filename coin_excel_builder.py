@@ -296,6 +296,24 @@ def build(path, name, mode, fills, cap, lev, price, price_note, intro, extra_not
     wb.calculation.fullCalcOnLoad = True
     wb.save(path); return dict(first=first, last=last, bad=bad)
 
+def fifo_hold(fills, short, now_kst):
+    """체결 물량을 FIFO로 맞춰 평균 보유시간을 구한다. 반환: (청산 물량, 청산분 보유시간×물량 합, 보유 물량, 보유분 경과시간×물량 합) — 시간 단위."""
+    import datetime as _dt
+    fm = "%Y-%m-%d %H:%M"
+    isE = (lambda l: ("진입" in l or "추격" in l or "보강" in l or "편입" in l or "재투입" in l)) if short else (lambda l: "매수" in l)
+    now = _dt.datetime.strptime(now_kst, fm) if now_kst else None
+    lots = []; cq = cw = 0.0
+    for d in sorted(fills, key=lambda r: r["t"]):
+        t = _dt.datetime.strptime(d["t"], fm)
+        if isE(d["label"]): lots.append([t, d["qty"]])
+        else:
+            rem = d["qty"]
+            while rem > 1e-9 and lots:
+                take = min(rem, lots[0][1]); cw += take * (t - lots[0][0]).total_seconds() / 3600; cq += take; lots[0][1] -= take; rem -= take
+                if lots[0][1] <= 1e-9: lots.pop(0)
+    oq = sum(q for _, q in lots); ow = sum(q * max(0.0, (now - t0).total_seconds() / 3600) for t0, q in lots) if now else 0.0
+    return cq, cw, oq, ow
+
 def build_pair(path, name, long_args, short_args, now_kst=None, intro="", pair_strategy=None, pair_title=None):
     """롱·숏 한 파일: 롱/숏 시트를 각각 만들고(접두어 '롱 '/'숏 ') 맨 앞에 '합계 요약'·'합산 추이'를 둔다.
     long_args/short_args 는 build() 의 인자(path 제외, wb_in/prefix 제외)를 dict 로 넘긴다."""
@@ -392,8 +410,15 @@ def build_pair(path, name, long_args, short_args, now_kst=None, intro="", pair_s
     mx = lambda col: f"=MAX('합산 추이'!{col}{mfirst}:{col}{mlast})"
     add("mdd", "MDD — 고점 대비 최대 낙폭 (USDT)", None, "0.0000", lf=mx("K"), sf=mx("M"), tf=mx("O"), bold=True)
     add("mddp", "MDD (기준 자본 대비 %)", None, "0.0%", lf=f"=B{r['mdd']}/B{r['cap']}", sf=f"=C{r['mdd']}/C{r['cap']}", tf=f"=D{r['mdd']}/D{r['cap']}", bold=True)
+    (cqL, cwL, oqL, owL), (cqS, cwS, oqS, owS) = fifo_hold(fl, False, now_kst), fifo_hold(fs, True, now_kst)
+    hv = lambda w, q: round(w / q, 2) if q > 0 else 0
+    add("hold_c", "평균 보유시간 — 청산된 물량 (시간)", None, "0.0", lf=hv(cwL, cqL), sf=hv(cwS, cqS), tf=hv(cwL + cwS, cqL + cqS))
+    add("hold_o", "평균 경과시간 — 현재 보유 물량 (시간)", None, "0.0", lf=hv(owL, oqL), sf=hv(owS, oqS), tf=hv(owL + owS, oqL + oqS))
+    add("hold", "평균 보유시간 (청산분+보유분, 시간)", None, "0.0", lf=hv(cwL + owL, cqL + oqL), sf=hv(cwS + owS, cqS + oqS), tf=hv(cwL + owL + cwS + owS, cqL + oqL + cqS + oqS), bold=True)
     add("h12", "최근 12시간 실현 순손익 (USDT)", 28, "0.0000;[Red]-0.0000;-")
     add("h24", "최근 24시간 실현 순손익 (USDT)", 31, "0.0000;[Red]-0.0000;-")
+    add("r12", "최근 12시간 실현 수익률 (기준 자본 대비)", None, "0.00%;[Red]-0.00%;-", lf=f"=B{r['h12']}/B{r['cap']}", sf=f"=C{r['h12']}/C{r['cap']}", tf=f"=D{r['h12']}/D{r['cap']}")
+    add("r24", "최근 24시간 실현 수익률 (기준 자본 대비)", None, "0.00%;[Red]-0.00%;-", lf=f"=B{r['h24']}/B{r['cap']}", sf=f"=C{r['h24']}/C{r['cap']}", tf=f"=D{r['h24']}/D{r['cap']}")
     for k in ("real", "tot", "tr", "mddp"):
         for j in range(1, 5): z.cell(r[k], j).fill = PatternFill("solid", fgColor="E2EFDA")
     z.column_dimensions["A"].width = 44
@@ -401,7 +426,8 @@ def build_pair(path, name, long_args, short_args, now_kst=None, intro="", pair_s
     nr = 4 + len(rows) + 1
     z.cell(nr, 1, "※ 보유 명목금액 합계는 롱(+)과 숏(−)이 상쇄된 순노출입니다. 기준 자본은 롱·숏 각각의 한도÷레버리지를 더한 값입니다.").font = f_note
     z.cell(nr + 1, 1, "※ MDD는 체결 시점의 실현 손익 곡선(처음 0 포함)과 마지막 '현재(미실현 포함)' 점에서 고점 대비 최대 하락폭입니다. 체결과 체결 사이의 평가손실은 반영되지 않아 실제 최악 낙폭보다 작을 수 있습니다.").font = f_note
-    z.cell(nr + 2, 1, "※ 과거 결과일 뿐이며 투자 조언이 아닙니다.").font = f_note
+    z.cell(nr + 2, 1, "※ 평균 보유시간은 체결 수량을 먼저 산 것부터(FIFO) 맞춰 계산한 값이며, 청산분은 실제 보유시간, 보유분은 갱신 시각까지의 경과시간입니다(파이썬 계산 값). 12·24시간 수익률은 해당 기간에 청산된 실현 순손익만 기준 자본으로 나눈 값입니다.").font = f_note
+    z.cell(nr + 3, 1, "※ 과거 결과일 뿐이며 투자 조언이 아닙니다.").font = f_note
     # 합산 추이 그래프 (롱·숏·합계 누적 순손익)
     ch = ScatterChart(); ch.title = "누적 순손익 — 롱·숏·합계 (수수료 후, USDT)"; ch.style = 2
     ch.x_axis.title = "경과시간 (시간, 첫 체결 기준)"; ch.y_axis.title = "누적 순손익 (USDT)"
