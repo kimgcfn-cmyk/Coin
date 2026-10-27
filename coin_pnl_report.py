@@ -19,8 +19,8 @@ KST = dt.timezone(dt.timedelta(hours=9))
 OUT = "/Users/Muita/Desktop/Coin/코인봇수익률"
 HERE = os.path.dirname(os.path.abspath(__file__))
 # 사용자가 직접 연 물량을 봇 장부에 편입한 수량(봇이 관리하지만 개시는 수동): 미실현 배분에서 '수동 개시'로 본다
-REGISTERED = {("ORDERUSDT", "short"): 2230.0, ("CAPUSDT", "long"): 4400.0}
-BOTNAME = {("ORDERUSDT", "short"): "ORDER 숏 봇", ("TUSDT", "short"): "T 숏 봇", ("CAPUSDT", "long"): "CAP 롱 봇", ("CAPUSDT", "short"): "CAP 숏 봇", ("ARIAUSDT", "long"): "ARIA 롱 봇"}
+REGISTERED = {("ORDERUSDT", "short"): 2230.0, ("CAPUSDT", "long"): 4400.0, ("QUSDT", "long"): 767.0}
+BOTNAME = {("ORDERUSDT", "short"): "ORDER 숏 봇", ("TUSDT", "short"): "T 숏 봇", ("CAPUSDT", "long"): "CAP 롱 봇", ("CAPUSDT", "short"): "CAP 숏 봇", ("ARIAUSDT", "long"): "ARIA 롱 봇", ("QUSDT", "long"): "Q 롱 봇", ("QUSDT", "short"): "Q 숏 봇", ("QNTUSDT", "short"): "QNT 숏 봇"}
 
 def fetch(hours):
     src = open(os.path.join(HERE, "coin_pnl_fetch.py"), encoding="utf-8").read().replace("24*3600*1000", f"{hours}*3600*1000")
@@ -109,7 +109,7 @@ def build(d, path, hours, cum=None):
     for p in d["positions"]:
         sym, side = p["symbol"], p["side"]; reg = REGISTERED.get((sym, side), 0.0)
         # 봇 장부 수량(상태 파일)로 봇이 관리하는 수량 파악: ORDER/T/CAP
-        nm = {("ORDERUSDT", "short"): "ORDER", ("TUSDT", "short"): "T", ("CAPUSDT", "long"): "CAP", ("CAPUSDT", "short"): "CAP_S", ("ARIAUSDT", "long"): "ARIA"}.get((sym, side)); st = d["states"].get(nm, {}) if nm else {}
+        nm = {("ORDERUSDT", "short"): "ORDER", ("TUSDT", "short"): "T", ("CAPUSDT", "long"): "CAP", ("CAPUSDT", "short"): "CAP_S", ("ARIAUSDT", "long"): "ARIA", ("QUSDT", "long"): "Q", ("QUSDT", "short"): "Q_S", ("QNTUSDT", "short"): "QNT_S"}.get((sym, side)); st = d["states"].get(nm, {}) if nm else {}
         bot_qty = float(st.get("qty") or 0.0) if (BOTNAME.get((sym, side)) and nm) else 0.0
         bot_opened = max(0.0, bot_qty - reg); manual_opened = max(0.0, p["qty"] - bot_opened)
         share_auto = (bot_opened / p["qty"]) if p["qty"] else 0.0
@@ -180,7 +180,7 @@ def build(d, path, hours, cum=None):
     wbk = wb.create_sheet("봇별(자동)", 2)
     wbk["A1"] = "자동(봇)별 손익 (24시간)"; wbk["A1"].font = f_title
     head(wbk, 3, ["봇", "체결 수", "진입 체결", "청산 체결", "거래대금(USDT)", "실현손익(수수료 전)", "수수료", "실현 순손익", "청산 1건당 평균 순손익"], h=34)
-    bots = [n for n in ("ORDER 숏 봇", "T 숏 봇", "CAP 롱 봇", "CAP 숏 봇", "ARIA 롱 봇", "기타 자동") if any(((BOTNAME.get((x["symbol"], x["posSide"]), "기타 자동") if x["orderId"] in ids else None) == n) for x in fills)]
+    bots = [n for n in ("ORDER 숏 봇", "T 숏 봇", "CAP 롱 봇", "CAP 숏 봇", "ARIA 롱 봇", "Q 롱 봇", "Q 숏 봇", "QNT 숏 봇", "기타 자동") if any(((BOTNAME.get((x["symbol"], x["posSide"]), "기타 자동") if x["orderId"] in ids else None) == n) for x in fills)]
     for i, n in enumerate(bots):
         r = 4 + i; wbk.cell(r, 1, n); crit = f'{rg("E")},A{r}'
         wbk.cell(r, 2, f"=COUNTIFS({crit})"); wbk.cell(r, 3, f'=COUNTIFS({crit},{rg("G")},"진입")'); wbk.cell(r, 4, f'=COUNTIFS({crit},{rg("G")},"청산")')
@@ -271,7 +271,7 @@ def add_cumulative(wb, D):
     wc["A1"] = "자동매매 누적 현황 — 코인별"; wc["A1"].font = f_title
     wc["A2"] = f"기간 {t_first:%m/%d %H:%M} ~ {t_last:%m/%d %H:%M} KST, 자동(봇) 체결만 집계 (거래소 체결 기준)." if autos else "자동 체결이 없습니다."; wc["A2"].font = f_note
     head(wc, 4, ["종목", "봇", "첫 자동 체결", "마지막 자동 체결", "가동 시간(h)", "자동 체결 수", "청산 체결 수", "거래대금(USDT)", "실현손익(수수료 전)", "수수료", "실현 순손익", "청산 1건당 평균", "청산 승률", "최대 단건 이익", "최대 단건 손실", "현재 보유(거래소)", "현재 미실현", "총 손익(실현+미실현)", "시간당 순손익", "봇 장부 누적(상태 파일)"], h=36)
-    stmap = {("ORDERUSDT", "short"): "ORDER", ("TUSDT", "short"): "T", ("CAPUSDT", "long"): "CAP", ("CAPUSDT", "short"): "CAP_S", ("ARIAUSDT", "long"): "ARIA"}
+    stmap = {("ORDERUSDT", "short"): "ORDER", ("TUSDT", "short"): "T", ("CAPUSDT", "long"): "CAP", ("CAPUSDT", "short"): "CAP_S", ("ARIAUSDT", "long"): "ARIA", ("QUSDT", "long"): "Q", ("QUSDT", "short"): "Q_S", ("QNTUSDT", "short"): "QNT_S"}
     r0 = 5; n = len(syms)
     for i, s in enumerate(syms):
         r = r0 + i; mine = [a for a in autos if a["sym"] == s]; cl = [a["net"] for a in mine if a["trade"] == "청산"]
@@ -305,7 +305,7 @@ def add_cumulative(wb, D):
     # 봇별 표
     b0 = rt + 4; wc.cell(b0 - 1, 1, "봇별 누적").font = f_bold
     head(wc, b0, ["봇", "상태", "첫 자동 체결", "마지막 자동 체결", "가동 시간(h)", "체결 수", "청산 체결 수", "거래대금(USDT)", "실현손익(수수료 전)", "수수료", "실현 순손익", "청산 1건당 평균", "청산 승률"], h=34)
-    botnames = [nm for nm in ("ORDER 숏 봇", "T 숏 봇", "CAP 롱 봇", "CAP 숏 봇", "ARIA 롱 봇") if any(BOTNAME.get((a["sym"], a["side"])) == nm for a in autos)]
+    botnames = [nm for nm in ("ORDER 숏 봇", "T 숏 봇", "CAP 롱 봇", "CAP 숏 봇", "ARIA 롱 봇", "Q 롱 봇", "Q 숏 봇", "QNT 숏 봇") if any(BOTNAME.get((a["sym"], a["side"])) == nm for a in autos)]
     for i, nm in enumerate(botnames):
         r = b0 + 1 + i; mine = [a for a in autos if BOTNAME.get((a["sym"], a["side"])) == nm]
         for j, v in enumerate([nm, "가동 중" if (D.get("active") or {}).get(nm) else "중지", min(a["t"] for a in mine), max(a["t"] for a in mine)], 1):
