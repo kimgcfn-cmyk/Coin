@@ -10,6 +10,8 @@ coin_grid_bot.py 의 주문·시세·상태 도구를 그대로 쓴다(모의 �
      −1% → −2% → −3% → −4% → −5% 단계마다 100 USDT씩 추가 매수(최대 5단계, 한도 max_total_usdt 600 안에서).
   2) 청산 사다리(keep_usdt>0이면 보유 금액이 그 이하일 때는 청산하지 않고 초과분만 청산 — 2026-10-27, 항상 최소 100 USDT 유지): 평균단가 +1% → +2% → … → +5%에서 단계마다 100 USDT씩 시장가 매도(평균가 아래에서는 팔지 않음). 남는 물량이 반 칸 미만이면 전량.
      매도가 한 번 나가면 진입 사다리는 처음 단계(−2%)로, 추가 매수가 나가면 청산 사다리가 처음 단계로 돌아간다.
+  2-1) 추세 보유(trend_hold, 2026-10-27): 이익 쪽이 최근 30분 안에 평균단가 +3%에 닿고 반대쪽 사다리가 3단계 이상이면 추세로 보고 청산 1단계까지만 판 뒤 들고 간다.
+     고점(숏은 저점) 대비 trend_pullback_pct(2.5%) 되돌림, 1분 3% 급반전, 이익 소멸 중 먼저 오는 것에 전량 정리. 유지 금액 keep_usdt(300) 이하는 청산하지 않고 초과분만 청산.
   3) 재투입: 수익실현으로 보유가 0이 되면, 현재가가 직전 5분 평균보다 유리할 때(롱은 낮을 때, 숏은 높을 때) reinvest_usdt(100)를 바로 투입한다.
      조건이 안 맞으면 맞을 때까지 기다린다. 손절로 비었을 때는 재투입하지 않는다.
   4) 손절 3구간: 사다리가 다 찼을 때(5단계 완료 또는 한도 때문에 더 못 살 때)의 평균단가에서 −8% → −10% → −12%(숏은 +8/+10/+12%)에
@@ -23,14 +25,15 @@ coin_grid_bot.py 의 주문·시세·상태 도구를 그대로 쓴다(모의 �
   python coin_avg_ladder_bot.py --preset avg_q_long_paper --status | --reset
   상태 파일 coin_avg_<프리셋 이름>_state.json. 모의(paper)는 실제 주문·디스코드·원장 기록이 없다.
 """
-import sys, os, time
+import sys, os, time, json
 from datetime import datetime, timezone
 import coin_grid_bot as g
 
 CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
-               ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0)):
+               ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0), ("deep_rebound_pct", 0.0), ("deep_from_stage", 3), ("trend_hold", False), ("trend_window_min", 30), ("trend_gain_pct", 3.0),
+               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -49,7 +52,7 @@ def step(state, price, now, order_fn, log, notify=None):
     if 0 < st["qty"] * price < 0.05:                       # 부동소수점 잔량 정리
         st.update(qty=0.0, hold=0.0, avg=0.0)
     # 시세 기록(직전 N분 평균·급변 감지용)
-    hist = [h for h in st.get("ref_hist", []) if now - h[0] <= 900]
+    hist = [h for h in st.get("ref_hist", []) if now - h[0] <= 1900]
     prev = [h for h in hist if now - h[0] <= CFG["ref_min"] * 60 + 20]
     hist.append([now, price]); st["ref_hist"] = hist
     if now < st.get("rest_until", 0):
@@ -95,6 +98,35 @@ def step(state, price, now, order_fn, log, notify=None):
         if do_in(float(CFG["first_entry_usdt"]), "첫 진입"):
             st.update(started=True, bs=0, ss=0, full=False, stopped=0)
         return ev
+    # ⓪ 추세 보유 모드(2026-10-27): 이익 쪽이 추세로 판정되면 청산 사다리를 trend_sell_stages단계까지만 쓰고 나머지는 들고 가다가,
+    #    이상 징후(최고 이익 지점 대비 되돌림 / 1분 급반전 / 이익 소멸) 때 전량 정리한다.
+    if CFG.get("trend_hold"):
+        if st["qty"] <= 1e-12:
+            for k_ in ("trend", "t_peak"): st.pop(k_, None)
+        else:
+            sgn = 1 if L else -1
+            prof = (price / st["avg"] - 1) * sgn * 100
+            st["t_peak"] = max(st.get("t_peak", price), price) if L else min(st.get("t_peak", price), price)
+            if not st.get("trend"):
+                w30 = [p for t, p in hist if now - t <= CFG["trend_window_min"] * 60 + 30]
+                fav = ((max(w30) / st["avg"] - 1) if L else (1 - min(w30) / st["avg"])) * 100
+                if fav >= CFG["trend_gain_pct"] and prof > 0 and int(CFG.get("opp_bs") or 0) >= int(CFG["trend_opp_stage"]):
+                    st["trend"] = True; st["t_peak"] = price
+                    log(f"  🚀 추세 보유 모드 ON — 이익 {prof:+.1f}% (최근 {CFG['trend_window_min']}분 최대 {fav:+.1f}%), 반대쪽 사다리 {int(CFG.get('opp_bs') or 0)}단계")
+            else:
+                pk = st["t_peak"]
+                pull = ((pk - price) / pk if L else (price - pk) / pk) * 100
+                pb = CFG["trend_pullback_pct"]
+                if CFG.get("trend_tight_gain_pct") and ((pk / st["avg"] - 1) if L else (1 - pk / st["avg"])) * 100 >= CFG["trend_tight_gain_pct"]:
+                    pb = CFG["trend_tight_pullback_pct"]          # 최고 이익이 trend_tight_gain_pct%를 넘으면 되돌림 기준을 좁혀 이익을 지킨다(2단계 트레일링)
+                w1 = [p for t, p in hist if now - t <= 90]
+                flip = ((max(w1) - price) / max(w1) if L else (price - min(w1)) / min(w1)) * 100
+                why = (f"고점 대비 {pull:.1f}% 되돌림" if pull >= pb else f"1분 {flip:.1f}% 급반전" if flip >= CFG["trend_flip_pct"] else "이익 소멸" if prof <= 0 else "")
+                if why:
+                    if do_out(st["qty"], f"추세 이탈 정리 ({why})"):
+                        st.update(qty=0.0, hold=0.0, avg=0.0, bs=0, ss=0, stopped=0, full=False, want_re=bool(CFG["reinvest_usdt"]))
+                        for k_ in ("trend", "t_peak"): st.pop(k_, None)
+                    return ev
     # ① 수익실현으로 비었으면 재투입
     if st["want_re"] and st["qty"] <= 1e-12 and not moved and (not CFG["reinvest_cond"] or ((price < ref) if L else (price > ref))):
         if do_in(float(CFG["reinvest_usdt"]), "재투입"):
@@ -117,13 +149,17 @@ def step(state, price, now, order_fn, log, notify=None):
     ext_lv = base * (1 + (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["ss"]) / 100) if L else base * (1 - (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["ss"]) / 100)
     can_in = (price <= ent_lv) if L else (price >= ent_lv)
     can_out = (price >= ext_lv) if L else (price <= ext_lv)
+    dr = float(CFG.get("deep_rebound_pct") or 0)
+    if dr and can_in and st["qty"] > 1e-12 and st["bs"] + 1 >= int(CFG.get("deep_from_stage", 3)):      # 깊은 단계는 직전 crash_window_min분 저점(롱)/고점(숏)에서 dr% 되돌린 뒤에만 진입
+        if not ((price >= min(win) * (1 + dr / 100)) if L else (price <= max(win) * (1 - dr / 100))):
+            can_in = False
     if can_in and not moved and st["bs"] < nst and st["hold"] + u <= cap and st["stopped"] == 0:
         if do_in(u, f"사다리 {st['bs'] + 1}단계"):
             st["bs"] += 1; st["ss"] = 0
             if st["bs"] >= nst or st["hold"] + u > cap:
                 st.update(full=True, q_at_full=st["qty"], avg_at_full=st["avg"])
                 log(f"  📌 사다리 완료 — 평균단가 {st['avg']:,.6g}, 손절선 " + " / ".join(f"{(st['avg'] * (1 - s / 100) if L else st['avg'] * (1 + s / 100)):,.6g}" for s in stops))
-    elif can_out and st["qty"] > 1e-12 and st["ss"] < nst and ((price >= st["avg"]) if L else (price <= st["avg"])) and st["hold"] > float(CFG.get("keep_usdt") or 0) + 1e-9 and \
+    elif can_out and st["qty"] > 1e-12 and st["ss"] < nst and ((price >= st["avg"]) if L else (price <= st["avg"])) and not (st.get("trend") and st["ss"] >= int(CFG["trend_sell_stages"])) and st["hold"] > float(CFG.get("keep_usdt") or 0) + 1e-9 and \
             (st["qty"] * (st["hold"] - float(CFG.get("keep_usdt") or 0)) / st["hold"]) * price >= 6:
         if CFG.get("sell_pct"):        # 보유물량의 sell_pct% 매도: start=이번 청산 사다리 시작 때 물량 기준(5단계×20%=전량), current=그때그때 남은 물량 기준
             if st["ss"] == 0 or not st.get("ss_base"): st["ss_base"] = st["qty"]
@@ -155,6 +191,9 @@ def run_check(send=True):
     state = g.load_state(); price = g.fetch_price(CFG["symbol"])
     if price <= 0: print("  ❌ 시세 조회 실패"); return
     print(f"  현재가: {price:,.6g} USDT")
+    if CFG.get("opp_state"):        # 추세 보유 모드가 반대쪽 봇의 사다리 단계를 본다 (읽기 전용)
+        try: CFG["opp_bs"] = int(json.load(open(CFG["opp_state"], encoding="utf-8")).get("bs", 0))
+        except Exception: CFG["opp_bs"] = 0
     order_fn = lambda side, usdt, p, ro, qty: g.place_order(CFG["symbol"], side, usdt, p, reduce_only=ro, dry_run=not send, qty_override=qty)
     step(state, price, time.time(), order_fn, print, notify=(lambda m: g.send_discord(m)) if (send and not CFG.get("paper")) else None)
     if send: g.save_state(state)
