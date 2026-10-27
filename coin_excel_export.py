@@ -35,6 +35,8 @@ EXTRA = {
                       dict(t="2026-10-27 18:16", label="수동 청산 환매", id="manual-hd-cap-short-cov", amt=450.9, qty=4182.0),
                       # 18:34 사용자가 직접 연 CAP 수동 숏 1,461개(평균 0.09857)를 사용자 요청으로 봇 장부에 편입 (18:4x)
                       dict(t="2026-10-27 18:34", label="수동 숏 편입", id="manual-hd-cap-short-reg2", amt=144.0, qty=1461.0)],
+         # 18:50~18:52 사용자가 직접 연 Q 수동 숏 1,125개(평균 0.080267)를 사용자 요청으로 봇 장부에 편입 (19:0x)
+         "HD_Q_S": [dict(t="2026-10-27 18:51", label="수동 숏 편입", id="manual-hd-q-short-reg", amt=90.30, qty=1125.0)],
          "HD_Q_L": [dict(t="2026-10-27 11:54", label="수동 청산 매도", id="manual-hd-q-long-end", amt=310.1676, qty=1495.0)],
          "HD_Q_S": [dict(t="2026-10-27 11:54", label="수동 청산 환매", id="manual-hd-q-short-end", amt=102.0738, qty=492.0)],"T": [dict(t="2026-10-25 22:47", label="수동 청산 환매", id="manual-t-close", amt=251.8573, qty=45160.0),
                dict(t="2026-10-26 13:20", label="수동 청산 환매", id="manual-t-close2", amt=347.025, qty=70400.0)],
