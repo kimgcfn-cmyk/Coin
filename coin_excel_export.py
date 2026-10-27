@@ -15,7 +15,8 @@ from coin_excel_builder import add_shadow_sheet
 OUT = "/Users/Muita/Desktop/Coin/코인봇수익률"
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "trading-ec2"]
 BOTS = {"HD_Q_L": ("coin_hd_q_long", "QUSDT"), "HD_Q_S": ("coin_hd_q_short", "QUSDT"),            # 롱숏합동전략 (2026-10-27 실전)
-        "HD_CAP_L": ("coin_hd_cap_long", "CAPUSDT"), "HD_CAP_S": ("coin_hd_cap_short", "CAPUSDT")}
+        "HD_CAP_L": ("coin_hd_cap_long", "CAPUSDT"), "HD_CAP_S": ("coin_hd_cap_short", "CAPUSDT"),
+        "HD_TAG_L": ("coin_hd_tag_long", "TAGUSDT"), "HD_TAG_S": ("coin_hd_tag_short", "TAGUSDT")}
 # 로그에 없는 체결(사용자 지시로 직접 낸 청산 주문). 주문 응답 값이고 시각은 근사다.
 EXTRA = {
          # 11:54 사용자 지시로 Q 롱숏합동전략 중지 후 Q 포지션 시장가 전량 청산 (롱 1,495개 평균 0.20747, 숏 492개 평균 0.207467)
@@ -420,6 +421,27 @@ HD_BT = [
  "· 이전 그리드 전략(5분평균 ±1%/50) 대비: CAP 3시간 −6 → +16, Q 3시간 +52 → +49(비슷), Q 5시간 −69 → −81(약간 나쁨).",
 ]
 
+HD_RULES_TAG = [
+ ("한 종목 = 롱+숏 동시 1개 전략", "급등 후 하락 패턴을 노린 소액 실전 테스트(넓은 사다리). 롱과 숏을 같은 규칙으로 동시에 운용", "엑셀은 롱+숏 합계(합계 요약·합산 추이) 중심으로 봅니다."),
+ ("첫 진입", "가동 직후(시세 5분 기록 후) 롱·숏 각 100 USDT 동시 진입", "first_entry_usdt 100"),
+ ("진입 사다리", "직전 60분 평균 시세 대비 롱 −3%, −6%, −9% / 숏 +3%, +6%, +9% (간격 3%)", "단계마다 100 USDT, 한도 300 USDT 안에서. 진입 사이 최소 5분"),
+ ("청산 사다리", "평균단가 대비 롱 +6%, +9%, +12% / 숏 −6%, −9%, −12% (간격 3%)", "단계마다 100 USDT 시장가. 평균가보다 불리하면 청산 안 함. 최소 보유 100 USDT(초과분만 청산)"),
+ ("추세 보유·노출 축소", "합동 CAP과 같은 규칙", "반대쪽 사다리 3단계↑이면 청산 1단계까지만 팔고 보유, 고점 대비 2.5% 되돌림 정리. 보유 150↑·평균단가 대비 3%↑ 불리·5분 평균 대비 1% 되돌림이면 100 청산"),
+ ("손절 3구간", "사다리 소진·한도 도달 후 평균단가 8/10/12%", "물량 1/3씩 시장가, 전량 정리 후 2시간 휴식"),
+ ("급변 보호", "5분 롱 −8% / 숏 +8%", "신규 진입 중단"),
+ ("손익 계산", "이동평균법", "롱·숏 거래내역 시트 → 합계 요약"),
+]
+HD_PARAMS_TAG = [
+ ("한도 (롱·숏 각각)", "300 USDT", "max_total_usdt 300 → 롱+숏 최대 600 USDT, 기준 자본 120 USDT(한도÷5×2)"),
+ ("사다리", "진입 ∓3%·청산 ±6% 시작, 간격 3%", "entry_base_pct 3, ladder_base_pct 6, ladder_step_pct 3"),
+ ("진입·청산 크기", "100 USDT / 단계", "ladder_usdt 100"),
+ ("최소 보유", "100 USDT", "keep_usdt 100"),
+ ("진입 기준", "직전 60분 평균 시세", "entry_ref_min 60"),
+ ("손절", "8% / 10% / 12% (1/3씩)", "stops [8, 10, 12], rest_min 120"),
+]
+HD_HIST_TAG = [("10/27 21:3x", "TAG 롱숏합동전략 소액 실전 테스트 가동(한도 롱·숏 각 300, 단계 100, 넓은 사다리 3/6/3)", "사용자 지시. 급등 후 하락 이벤트 연구의 PW 변형(과거 56건 재생: 평균 +0.7%, 최악 −31.5%, 평균 MDD 18.5%)")]
+HD_BT_TAG = ["· 급등 후 하락 이벤트 56건(24시간 재생): 합동 넓은 사다리 평균 +0.7%·최악 −31.5%·평균 MDD 18.5%, 숏 단독 넓은 사다리 평균 +6.1%·최악 −119%. 표본이 작아 방향만 참고하세요."]
+
 def main():
     out = OUT
     if "--out" in sys.argv: out = sys.argv[sys.argv.index("--out") + 1]
@@ -435,14 +457,14 @@ def main():
         except Exception: state = {}
         res[key] = (fills, state, last_price(sym))
     # ── 롱숏합동전략 (CAP, Q) — 롱+숏 합계 중심 한 파일 ──
-    for tag in ("CAP", "Q"):
+    for tag in ("CAP", "Q", "TAG"):
         fl, _, pl = res[f"HD_{tag}_L"]; fs, _, ps = res[f"HD_{tag}_S"]
         def side_args(mode, fills, px):
-            return dict(name=f"{tag} {'롱' if mode == 'long' else '숏'}", mode=mode, fills=fills, cap=(300 if tag == "Q" else 1000), lev=5, price=px or 0.0, price_note="조회 시점 시세 (자동 갱신)",
+            return dict(name=f"{tag} {'롱' if mode == 'long' else '숏'}", mode=mode, fills=fills, cap=(300 if tag in ("Q", "TAG") else 1000), lev=5, price=px or 0.0, price_note="조회 시점 시세 (자동 갱신)",
                         intro=(f"서버 봇 로그의 실제 체결 {len(fills)}건으로 자동 생성한 파일입니다. 마지막 갱신 {now} KST." if fills else f"{tag} {'롱' if mode == 'long' else '숏'} 봇은 2026-10-27 11:21 KST에 실전 가동을 시작했고 아직 체결이 없습니다(시세 5분 기록 후 −2%/+2% 대기). 마지막 갱신 {now} KST."),
                         extra_notes=["· 체결 내역은 서버 로그에서 자동으로 채워집니다. 직접 수정한 내용은 다음 갱신 때 덮어써집니다.", "· 기준 자본은 한도 1000 ÷ 레버리지 5 = 200 USDT(롱·숏 각각)입니다(12:5x 이전 구간은 한도 600 기준이었으나 표는 현재 설정으로 계산)."], spare=0 if fills else 60)
         st_ = dict(subtitle=f"{tag}를 롱과 숏으로 동시에 운용하는 하나의 전략입니다. 평균단가 기준 ±2%에서 시작해 ∓6%까지 100 USDT씩 사다리로 쌓고 ±2~6%에서 100 USDT씩 청산하며, 사다리가 다 차면 평균단가 8/10/12% 3구간 손절을 둡니다. 10/27 11:21부터 실전. 모든 수익률 분석은 롱+숏 합계를 기준으로 봅니다.",
-                   rules=HD_RULES, params=HD_PARAMS, history=HD_HIST, fit=HD_FIT, backtests=HD_BT)
+                   rules=(HD_RULES_TAG if tag == "TAG" else HD_RULES), params=(HD_PARAMS_TAG if tag == "TAG" else HD_PARAMS), history=(HD_HIST_TAG if tag == "TAG" else HD_HIST), fit=HD_FIT, backtests=(HD_BT_TAG if tag == "TAG" else HD_BT))
         save_atomic(os.path.join(out, f"{tag}_롱숏합동전략_수익률.xlsx"), lambda p, la=side_args("long", fl, pl), sa=side_args("short", fs, ps), st_=st_, tag=tag: b.build_pair(
             p, tag, la, sa, now_kst=now, pair_strategy=st_, pair_title=f"{tag} 롱숏합동전략 — 전략 요약",
             intro=f"{tag} 롱숏합동전략: 롱과 숏을 합한 값이 이 전략의 결과입니다. 롱 요약·숏 요약은 합계의 내역입니다. 마지막 갱신 {now} KST."))
