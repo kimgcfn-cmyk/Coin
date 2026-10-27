@@ -113,6 +113,8 @@ CFG = {
     "surge_trail_pct" : 3.0,               # (ladder가 없을 때만 쓰는 단일 매도선)
     "surge_ladder"    : [3.0, 4.5, 6.0],   # 급등 고점 대비 -3%, -4.5%, -6%에서 급등 시작 때 물량의 1/3씩 분할 매도 (2026-10-24)
     "surge_confirm_min": 3,                # 사다리 각 단계는 매도선 아래에 3분 연속(3번 연속 점검) 머물러야 판다 + 한 번에 한 단계만 (가짜 내림 신호 방지, 2026-10-24)
+    "crash_fast_pct"  : 3.0,               # 짧은 창 급락 보호(숏 rally_fast_pct의 거울): crash_fast_win_min분 안에 -N% 급락 시 신규 매수 중단 (0=끔)
+    "crash_fast_win_min": 1,
     "crash_mode"      : True,              # 급락 대응 (2026-10-24): 5분 안에 고점 대비 -8% 이상 급락하면 신규 매수만 중단(보유분 매도는 그대로)
     "crash_pct"       : 8.0,
     "crash_window_min": 5,
@@ -897,14 +899,19 @@ def run_check(send: bool = True):
         tnow = time.time()
         hist = [h for h in (state.get("ref_hist") or state.get("px_hist", [])) if tnow - h[0] <= CFG["crash_window_min"] * 60 + 30]
         if not state.get("crash_on"):
-            hi = max([p for _, p in hist] + [price])
-            if price <= hi * (1 - CFG["crash_pct"] / 100):
+            hi5 = max([p for _, p in hist] + [price])
+            fw = CFG.get("crash_fast_win_min", 1) * 60 + 30     # 짧은 창 급락(숏의 rally_fast 거울): 1분 -3%
+            hi_f = max([p for ts, p in hist if tnow - ts <= fw] + [price])
+            slow = price <= hi5 * (1 - CFG["crash_pct"] / 100)
+            fast = bool(CFG.get("crash_fast_pct")) and price <= hi_f * (1 - CFG["crash_fast_pct"] / 100)
+            if slow or fast:
+                hi, wmin = (hi5, CFG["crash_window_min"]) if slow else (hi_f, CFG.get("crash_fast_win_min", 1))
                 state["crash_on"] = True
                 state["crash_low"] = price
                 state["crash_low_t"] = tnow
-                print(f"  📉 급락 감지 — {CFG['crash_window_min']}분 고점 {hi:,.4f} → {price:,.4f} ({(price/hi-1)*100:.1f}%): 신규 매수 중단")
+                print(f"  📉 급락 감지 — {wmin}분 고점 {hi:,.4f} → {price:,.4f} ({(price/hi-1)*100:.1f}%): 신규 매수 중단")
                 if send:
-                    send_discord(f"📉 <b>{CFG['symbol']} 급락 감지</b> ({(price/hi-1)*100:.1f}%, {CFG['crash_window_min']}분)\n💵 {hi:,.4f} → {price:,.4f}\n"
+                    send_discord(f"📉 <b>{CFG['symbol']} 급락 감지</b> ({(price/hi-1)*100:.1f}%, {wmin}분)\n💵 {hi:,.4f} → {price:,.4f}\n"
                                  f"신규 매수를 멈춥니다(보유분 {state.get('qty', 0.0):.4f}개 매도는 그대로). 저점 대비 +{CFG['crash_rebound_pct']:g}% 반등하거나 {CFG['crash_quiet_min']}분간 새 저점이 없으면 재개합니다.")
         else:
             if price < state.get("crash_low", price):
