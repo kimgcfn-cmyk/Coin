@@ -6,7 +6,7 @@ coin_grid_bot.py 의 주문·시세·상태 도구를 그대로 쓴다(모의 �
 
 [전략 — 롱 기준, 숏은 방향만 반대(거울)]
   0) 첫 진입: 처음 가동하면(시세 5분 기록 후) 롱·숏 모두 기다리지 않고 바로 first_entry_usdt(100 USDT)를 같이 진입한다(2026-10-27 사용자 지시).
-  1) 진입 사다리: 보유가 없으면 직전 5분 평균가가 기준 → 그보다 −1% 낮을 때 100 USDT 매수(2026-10-27 ±2%→±1%). 보유 중이면 평균단가 기준으로
+  1) 진입 사다리: 보유가 없으면 직전 5분 평균가가 기준 → 그보다 −1%(entry_base_pct, 2026-10-27 사용자 지시 −2%→−1%) 낮을 때 100 USDT 매수. 보유 중이면 평균단가 기준으로
      −1% → −2% → −3% → −4% → −5% 단계마다 100 USDT씩 추가 매수(최대 5단계, 한도 max_total_usdt 600 안에서).
   2) 청산 사다리(keep_usdt>0이면 보유 금액이 그 이하일 때는 청산하지 않고 초과분만 청산 — 2026-10-27, 항상 최소 100 USDT 유지): 평균단가 +1% → +2% → … → +5%에서 단계마다 100 USDT씩 시장가 매도(평균가 아래에서는 팔지 않음). 남는 물량이 반 칸 미만이면 전량.
      매도가 한 번 나가면 진입 사다리는 처음 단계(−2%)로, 추가 매수가 나가면 청산 사다리가 처음 단계로 돌아간다.
@@ -33,7 +33,7 @@ CFG = g.CFG
 for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0), ("ladder_step_pct", 1.0), ("ladder_extra", 4),
                ("reinvest_usdt", 100.0), ("reinvest_cond", True), ("stops", [8.0, 10.0, 12.0]), ("rest_min", 120),
                ("ref_min", 5), ("crash_pct", 8.0), ("crash_window_min", 5), ("first_entry_usdt", 0.0), ("sell_pct", 0.0), ("sell_pct_of", "start"), ("keep_usdt", 0.0), ("deep_rebound_pct", 0.0), ("deep_from_stage", 3), ("trend_hold", False), ("trend_window_min", 30), ("trend_gain_pct", 3.0),
-               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
+               ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
 
@@ -145,7 +145,8 @@ def step(state, price, now, order_fn, log, notify=None):
                     log(f"  ⏸️ 전량 정리 — {CFG['rest_min']}분 쉽니다")
             return ev
     # ③ 진입 / 청산 사다리
-    ent_lv = base * (1 - (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["bs"]) / 100) if L else base * (1 + (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["bs"]) / 100)
+    eb = float(CFG["entry_base_pct"]) if CFG.get("entry_base_pct") else float(CFG["ladder_base_pct"])       # 진입 사다리 시작(10/27: ±1%), 청산 사다리는 ladder_base_pct(±2%)
+    ent_lv = base * (1 - (eb + CFG["ladder_step_pct"] * st["bs"]) / 100) if L else base * (1 + (eb + CFG["ladder_step_pct"] * st["bs"]) / 100)
     ext_lv = base * (1 + (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["ss"]) / 100) if L else base * (1 - (CFG["ladder_base_pct"] + CFG["ladder_step_pct"] * st["ss"]) / 100)
     can_in = (price <= ent_lv) if L else (price >= ent_lv)
     can_out = (price >= ext_lv) if L else (price <= ext_lv)
