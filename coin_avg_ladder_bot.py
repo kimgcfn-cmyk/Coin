@@ -45,6 +45,8 @@ def step(state, price, now, order_fn, log, notify=None):
     for k_, v_ in (("qty", 0.0), ("avg", 0.0), ("hold", 0.0), ("bs", 0), ("ss", 0), ("stopped", 0), ("full", False), ("q_at_full", 0.0),
                    ("avg_at_full", 0.0), ("want_re", False), ("cum_pnl", 0.0), ("cum_fees", 0.0)):
         st.setdefault(k_, v_)
+    if 0 < st["qty"] * price < 0.05:                       # 부동소수점 잔량 정리
+        st.update(qty=0.0, hold=0.0, avg=0.0)
     # 시세 기록(직전 N분 평균·급변 감지용)
     hist = [h for h in st.get("ref_hist", []) if now - h[0] <= 900]
     prev = [h for h in hist if now - h[0] <= CFG["ref_min"] * 60 + 20]
@@ -72,6 +74,9 @@ def step(state, price, now, order_fn, log, notify=None):
     def do_out(qq, why, stop=False):
         qq = min(qq, st["qty"])
         ok, detail, q, info = order_fn("sell" if L else "buy", 0.0, price, True, qq)
+        if not ok and ("25227" in str(detail) or "No position" in str(detail)):      # 거래소에 포지션이 없음 → 장부를 0으로 맞춘다
+            log(f"  ⚠️ 거래소에 포지션이 없어 장부를 0으로 맞춤: {detail}")
+            st.update(qty=0.0, hold=0.0, avg=0.0, bs=0, ss=0, stopped=0, full=False); ev.append(("zero", why)); return False
         if not ok:
             log(f"  ❌ {word_out} 실패: {detail}"); ev.append(("fail", why)); return False
         aq = info.get("filled_qty", q) or qq; fp = info.get("avg_price", price); fee = info.get("fee") or fp * aq * FEE
