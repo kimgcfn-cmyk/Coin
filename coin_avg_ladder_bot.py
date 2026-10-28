@@ -111,7 +111,7 @@ def step(state, price, now, order_fn, log, notify=None):
         if stop: st["n_stop"] = st.get("n_stop", 0) + 1; st["stop_pnl"] = st.get("stop_pnl", 0.0) + net
         log(f"  {'🟢' if net > 0 else '🔴'} {word_out}({why}): {detail} | 평균단가 {st['avg']:,.6g} → {fp:,.6g}, 순손익 {net:+.2f} USDT")
         ev.append(("out", why, net))
-        if notify: notify(f"{'🟢' if net > 0 else '🔴'} <b>{CFG['symbol']} {word_out} · {'청산(손익)' if net > 0 else '청산(손실)'}</b> ({why})\n순손익 {net:+.2f} USDT · 누적 {st['cum_pnl']:+.2f}")      # 청산 알림에 이익/손실 구분 표시(2026-10-28 사용자 지시)
+        if notify: notify(f"{'🟢' if net > 0 else '🔴'} <b>{CFG['symbol']} {word_out} · {'청산(이익)' if net > 0 else '청산(손실)'}</b> ({why})\n순손익 {net:+.2f} USDT · 누적 {st['cum_pnl']:+.2f}")      # 청산 알림에 이익/손실 구분 표시(2026-10-28 사용자 지시)
         return True
 
     if not st.get("started") and st["qty"] <= 1e-12 and CFG.get("first_entry_usdt") and not blocked:      # 첫 진입: 롱·숏 모두 시작하자마자 같이 first_entry_usdt 진입 (2026-10-27 사용자 지시)
@@ -344,7 +344,7 @@ def cf_cut(st, price, order_fn, L, keep, log, notify=None):
     st["hold"] = st["hold"] * (st["qty"] - aq) / st["qty"] if st["qty"] > 0 else 0.0; st["qty"] -= aq
     st["n_out"] = st.get("n_out", 0) + 1
     log(f"  🟠 잔량 손절({keep:g}USDT 남김): {detail} | 순손익 {net:+.2f} USDT")
-    if notify: notify(f"🟠 <b>{CFG['symbol']} {'롱' if L else '숏'} 잔량 손절 · {'청산(손익)' if net > 0 else '청산(손실)'}</b> ({keep:g}USDT 남김)\n순손익 {net:+.2f} USDT · 남은 {st['qty']:,.6g}개")
+    if notify: notify(f"🟠 <b>{CFG['symbol']} {'롱' if L else '숏'} 잔량 손절 · {'청산(이익)' if net > 0 else '청산(손실)'}</b> ({keep:g}USDT 남김)\n순손익 {net:+.2f} USDT · 남은 {st['qty']:,.6g}개")
     return True
 
 
