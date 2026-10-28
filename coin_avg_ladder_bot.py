@@ -354,6 +354,8 @@ def run_check(send=True):
     state = g.load_state(); price = g.fetch_price(CFG["symbol"])
     if price <= 0: print("  ❌ 시세 조회 실패"); return
     print(f"  현재가: {price:,.6g} USDT")
+    if state.get("cf_halt"):        # 수익곡선 필터(coin_cf_pair_run.py)가 롱+숏을 정지시킨 상태 — 거래·점검 없이 대기(재가동은 컨트롤러가 판정)
+        print("  ⏸ 수익곡선 필터 정지 중 — 거래하지 않음(남은 잔량은 그대로 보유)"); return
     if CFG.get("opp_state"):        # 추세 보유 모드가 반대쪽 봇의 사다리 단계를 본다 (읽기 전용)
         try: CFG["opp_bs"] = int(json.load(open(CFG["opp_state"], encoding="utf-8")).get("bs", 0))
         except Exception: CFG["opp_bs"] = 0
