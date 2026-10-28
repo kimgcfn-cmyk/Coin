@@ -4,7 +4,7 @@
 사용:  python3 coin_cf_observe.py [--hours 24] [--notify] [--symbols cap,q,tag]
 동작:  Bitget 공개 1분봉(최근 N시간 + 시드 70분)으로 CAP·Q·TAG 롱숏합동 실전 프리셋을 봇 엔진(coin_avg_ladder_bot.cf_step) 그대로 재생해
        '수익곡선 필터 없음' vs '필터 적용'을 비교한다. 실제 주문·상태 변경 없음(전부 모의, 거래소는 시세 조회만).
-필터(롱·숏 각각의 수익곡선, 봇당 기준 자본 = 한도÷5 = 100 USDT):  하락 −5%(5 USDT)면 그 봇만 정지 + 잔량 100 USDT만 남김 → 그 봇의 그림자 곡선이 저점 +8%(8 USDT) 오르고 최소 정지 시간(기본 120분)이 지나면 그 봇만 재가동.
+필터(롱·숏 각각의 수익곡선, 봇당 기준 자본 = 한도÷5 = 100 USDT):  하락 −5%(5 USDT)면 그 봇만 정지 + 잔량 100 USDT만 남김 → 그 봇의 그림자 곡선이 저점 +8%(8 USDT) 오르고 오르면 그 봇만 바로 재가동(최소 정지 시간 기본 0).
        정지 중에는 반대쪽 봇에 사다리 단계 0으로 보인다. 수동 편입·정정이 없는 순수 시세 재생이다(슬리피지 0.30%·수수료 0.04% 가정, 실제보다 보수적).
 주의:  과거 재생 결과일 뿐 투자 조언이 아니다. 필터를 실전 봇에 켜는 것은 별도 지시가 있을 때만(프리셋 cfg "curve_filter": "live").
 """
@@ -36,7 +36,7 @@ def preset(name):
     return json.load(open(os.path.join(HERE, "coin_grid_presets", f"{name}.json"), encoding="utf-8"))["cfg"]
 
 
-def replay(key, rows, filt, min_stop=120, mode="side"):
+def replay(key, rows, filt, min_stop=0, mode="side"):
     """rows: 시드+본 구간 [(ts, price)]. filt=True면 수익곡선 필터(CurveFilter, mode side=롱·숏 각각 / pair=합산) 적용. 반환: dict."""
     seed = rows[:SEED_MIN]; body = rows[SEED_MIN:]
     g.CFG.update(paper=True, paper_slip=SLIP, leverage=1)
@@ -63,7 +63,7 @@ def replay(key, rows, filt, min_stop=120, mode="side"):
 
 
 def main():
-    hours = 24; syms = list(SYM); min_stop = 120
+    hours = 24; syms = list(SYM); min_stop = 0
     if "--hours" in sys.argv: hours = int(sys.argv[sys.argv.index("--hours") + 1])
     mode = sys.argv[sys.argv.index("--mode") + 1] if "--mode" in sys.argv else "side"
     if "--min-stop" in sys.argv: min_stop = int(sys.argv[sys.argv.index("--min-stop") + 1])

@@ -5,7 +5,7 @@ CurveFilter(sides=("long",)) / CurveFilter(sides=("short",))  : 그 봇 하나�
   ① 곡선이 직전 고점 대비 기준 자본(한도÷5)의 drop_pct%(기본 5%)만큼 내려가면 그 봇을 정지하고 보유량을 keep USDT(기본 100)만 남기고 시장가(reduce-only)로 정리한다.
      정지된 봇은 반대쪽 봇에 사다리 단계 0으로 보인다. 반대쪽 봇은 자기 곡선으로 따로 판단한다(같이 멈추지 않는다).
   ② 정지 시점의 장부로 '그림자 봇'(모의)이 같은 전략을 계속 돌며 그림자 곡선을 추적한다.
-  ③ 그림자 곡선이 자기 저점 대비 rise_pct%(기본 8%) 오르고 최소 min_stop_min분(기본 120)이 지나면 그 봇만 재가동한다(시세 기록은 그림자 것을 이어받음).
+  ③ 그림자 곡선이 자기 저점 대비 rise_pct%(기본 8%) 오르면 그 봇만 재가동한다(min_stop_min 기본 0 = 최소 정지 시간 없음)(시세 기록은 그림자 것을 이어받음).
 CurveFilter(sides=("long","short")) 로 만들면 롱+숏 합산 곡선으로 한 쌍을 같이 판정하는 방식(합산 모드)도 쓸 수 있다.
 두 가지로 쓴다: (1) 관찰 모드/백테스트 — external=False, 이 클래스가 담당 봇 장부를 직접 step 한다.
               (2) 실전 컨트롤러(coin_cf_run.py) — external=True, 실봇 프로세스가 각자 step 하고 이 클래스는 판정·정지·잔량 손절·그림자·재가동만 한다
@@ -19,7 +19,7 @@ SIDE_KO = {"long": "롱", "short": "숏"}
 
 
 class CurveFilter:
-    def __init__(self, cfgs, states, order_fn, sides=("long",), drop_pct=5.0, rise_pct=8.0, min_stop_min=120, keep=100.0, cap_div=5.0,
+    def __init__(self, cfgs, states, order_fn, sides=("long",), drop_pct=5.0, rise_pct=8.0, min_stop_min=0, keep=100.0, cap_div=5.0,
                  external=False, prepare=None, notify=None, log=None, name=""):
         """cfgs/states: {'long': ..., 'short': ...} 둘 다 넘기고, sides로 이 필터가 맡을 봇을 정한다. order_fn: 실봇 주문 함수(side, usdt, price, reduce_only, qty) — 관찰 모드에서는 모의.
         prepare(sd): 실주문 직전에 해당 봇의 CFG를 적용하는 훅(실전용). notify(msg): 디스코드 알림. log(msg): 로그 출력."""

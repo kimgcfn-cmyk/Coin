@@ -343,7 +343,7 @@ def cf_cut(st, price, order_fn, L, keep, log, notify=None):
     st["cum_pnl"] += net; st["cum_fees"] = st.get("cum_fees", 0.0) + fee
     st["hold"] = st["hold"] * (st["qty"] - aq) / st["qty"] if st["qty"] > 0 else 0.0; st["qty"] -= aq
     st["n_out"] = st.get("n_out", 0) + 1
-    log(f"  🟠 잔량 손절({keep:g}USDT 남김): {detail} | 순손익 {net:+.2f} USDT")
+    log(f"  🟠 {'롱' if L else '숏'} 잔량 손절({keep:g}USDT 남김): {detail} | 순손익 {net:+.2f} USDT")
     if notify: notify(f"🟠 <b>{CFG['symbol']} {'롱' if L else '숏'} 잔량 손절 · {'청산(이익)' if net > 0 else '청산(손실)'}</b> ({keep:g}USDT 남김)\n순손익 {net:+.2f} USDT · 남은 {st['qty']:,.6g}개")
     return True
 
