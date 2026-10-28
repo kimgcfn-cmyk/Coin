@@ -42,6 +42,15 @@ for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0
                ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("entry_ref_min", 0), ("max_entry_stage", 0), ("hedge_follow_usdt", 0.0), ("hedge_opp_stage", 3), ("hedge_max_usdt", 500.0), ("hedge_step_pct", 1.0), ("entry_min_gap_min", 0), ("exit_usdt", 0.0), ("acct_max_ratio", 0.0), ("_acct_block", False), ("counter_trend_pct", 0.0), ("counter_stage_cap", 0), ("entry_gap_fast_pct", 0.0), ("entry_ref_mix", 0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
+# 수익곡선 필터(2026-10-28 사용자 지시): 롱+숏 합산 곡선 기준 정지·잔량 손절·그림자 재가동은 coin_cf_pair.py(PairFilter)가 담당한다.
+# 이 파일에는 거기서 쓰는 공통 함수(cf_equity·cf_cut·cf_paper_order)만 둔다. 봇 본체(step)는 필터 없이 그대로 동작한다.
+CF_DEF = {"cf_slip": 0.003}
+for k_, v_ in CF_DEF.items():
+    CFG.setdefault(k_, v_)
+
+
+def cfv(k):
+    return CFG.get(k, CF_DEF[k])
 
 
 def step(state, price, now, order_fn, log, notify=None):
@@ -102,7 +111,7 @@ def step(state, price, now, order_fn, log, notify=None):
         if stop: st["n_stop"] = st.get("n_stop", 0) + 1; st["stop_pnl"] = st.get("stop_pnl", 0.0) + net
         log(f"  {'🟢' if net > 0 else '🔴'} {word_out}({why}): {detail} | 평균단가 {st['avg']:,.6g} → {fp:,.6g}, 순손익 {net:+.2f} USDT")
         ev.append(("out", why, net))
-        if notify: notify(f"{'🟢' if net > 0 else '🔴'} <b>{CFG['symbol']} {word_out}</b> ({why})\n순손익 {net:+.2f} USDT · 누적 {st['cum_pnl']:+.2f}")
+        if notify: notify(f"{'🟢' if net > 0 else '🔴'} <b>{CFG['symbol']} {word_out} · {'청산(손익)' if net > 0 else '청산(손실)'}</b> ({why})\n순손익 {net:+.2f} USDT · 누적 {st['cum_pnl']:+.2f}")      # 청산 알림에 이익/손실 구분 표시(2026-10-28 사용자 지시)
         return True
 
     if not st.get("started") and st["qty"] <= 1e-12 and CFG.get("first_entry_usdt") and not blocked:      # 첫 진입: 롱·숏 모두 시작하자마자 같이 first_entry_usdt 진입 (2026-10-27 사용자 지시)
@@ -297,6 +306,46 @@ def prefill_hist(state, now=None):
         state["ref_hist"] = add + hist
         print(f"  ⏩ 과거 1분봉 {len(add)}개로 시세 기록을 미리 채웠습니다(시작 직후 대기 없음)")
     return len(add)
+
+
+def cf_equity(st, price, L):
+    """수익곡선 값: 누적 순손익 + 보유분 평가손익(반대 슬리피지·청산 수수료 반영)."""
+    q = st.get("qty", 0.0) or 0.0; slip = float(cfv("cf_slip"))
+    un = ((q * ((price * (1 - slip)) - st["avg"]) if L else q * (st["avg"] - price * (1 + slip))) - q * price * FEE) if q > 0 else 0.0
+    return (st.get("cum_pnl", 0.0) or 0.0) + un
+
+
+def cf_paper_order(sd, usdt, p, ro, qty):
+    """그림자 봇용 모의 주문: CFG의 paper 설정을 잠시 바꿔 g.place_order의 모의 체결 경로를 쓴다(거래소 호출 없음)."""
+    keys = ("paper", "paper_slip"); old = {k: CFG[k] for k in keys if k in CFG}
+    CFG["paper"] = True; CFG["paper_slip"] = float(cfv("cf_slip"))
+    try: return g.place_order(CFG["symbol"], sd, usdt, p, reduce_only=ro, dry_run=False, qty_override=qty)
+    finally:
+        for k in keys:
+            if k in old: CFG[k] = old[k]
+            else: CFG.pop(k, None)
+
+
+def cf_cut(st, price, order_fn, L, keep, log, notify=None):
+    """보유량을 keep USDT만 남기고 시장가 reduce-only로 정리하고 장부(실현손익)를 갱신한다. 반환: True(완료·필요 없음) / False(실패 — 다음 분 재시도)."""
+    q = st.get("qty", 0.0) or 0.0; hold = st.get("hold", 0.0) or 0.0
+    if q <= 0 or hold <= keep + 1e-9: return True
+    qq = q * (1 - keep / hold)
+    ok, detail, qf, info = order_fn("sell" if L else "buy", 0.0, price, True, qq)
+    if not ok and ("25227" in str(detail) or "No position" in str(detail)):
+        log(f"  ⚠️ 거래소에 포지션이 없어 장부를 0으로 맞춤: {detail}"); st.update(qty=0.0, hold=0.0, avg=0.0, bs=0, ss=0); return True
+    if not ok:
+        log(f"  ❌ 잔량 손절 실패(다음 분 재시도): {detail}")
+        if notify: notify(f"❌ <b>{CFG['symbol']} 잔량 손절 실패</b> — 다음 분 재시도\n{str(detail)[:120]}")
+        return False
+    aq = info.get("filled_qty", qf) or qq; fp = info.get("avg_price", price); fee = info.get("fee") or fp * aq * FEE
+    net = aq * ((fp - st["avg"]) if L else (st["avg"] - fp)) - fee
+    st["cum_pnl"] += net; st["cum_fees"] = st.get("cum_fees", 0.0) + fee
+    st["hold"] = st["hold"] * (st["qty"] - aq) / st["qty"] if st["qty"] > 0 else 0.0; st["qty"] -= aq
+    st["n_out"] = st.get("n_out", 0) + 1
+    log(f"  🟠 잔량 손절({keep:g}USDT 남김): {detail} | 순손익 {net:+.2f} USDT")
+    if notify: notify(f"🟠 <b>{CFG['symbol']} {'롱' if L else '숏'} 잔량 손절 · {'청산(손익)' if net > 0 else '청산(손실)'}</b> ({keep:g}USDT 남김)\n순손익 {net:+.2f} USDT · 남은 {st['qty']:,.6g}개")
+    return True
 
 
 def run_check(send=True):
