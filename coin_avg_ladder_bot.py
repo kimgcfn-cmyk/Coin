@@ -42,7 +42,7 @@ for k_, v_ in (("side", "long"), ("ladder_usdt", 100.0), ("ladder_base_pct", 2.0
                ("trend_opp_stage", 3), ("trend_sell_stages", 1), ("trend_pullback_pct", 1.5), ("trend_flip_pct", 3.0), ("opp_state", ""), ("relax_opp_stage", 0), ("derisk_hold_usdt", 0.0), ("derisk_pct", 1.0), ("derisk_usdt", 100.0), ("derisk_underwater_pct", 0.0), ("entry_ref_min", 0), ("max_entry_stage", 0), ("hedge_follow_usdt", 0.0), ("hedge_opp_stage", 3), ("hedge_max_usdt", 500.0), ("hedge_step_pct", 1.0), ("entry_min_gap_min", 0), ("exit_usdt", 0.0), ("acct_max_ratio", 0.0), ("_acct_block", False), ("counter_trend_pct", 0.0), ("counter_stage_cap", 0), ("entry_gap_fast_pct", 0.0), ("entry_ref_mix", 0), ("derisk_block_min", 0), ("relax_keep_usdt", 0.0), ("entry_base_pct", 0.0), ("trend_tight_gain_pct", 0.0), ("trend_tight_pullback_pct", 1.5), ("opp_bs", 0)):
     CFG.setdefault(k_, v_)
 FEE = 0.0004
-# 수익곡선 필터(2026-10-28 사용자 지시): 롱+숏 합산 곡선 기준 정지·잔량 손절·그림자 재가동은 coin_cf_pair.py(PairFilter)가 담당한다.
+# 수익곡선 필터(2026-10-28 사용자 지시): 롱·숏 각각의 곡선으로 판정하는 정지·잔량 손절·그림자 재가동은 coin_cf_filter.py(CurveFilter)·coin_cf_run.py가 담당한다.
 # 이 파일에는 거기서 쓰는 공통 함수(cf_equity·cf_cut·cf_paper_order)만 둔다. 봇 본체(step)는 필터 없이 그대로 동작한다.
 CF_DEF = {"cf_slip": 0.003}
 for k_, v_ in CF_DEF.items():
@@ -354,7 +354,7 @@ def run_check(send=True):
     state = g.load_state(); price = g.fetch_price(CFG["symbol"])
     if price <= 0: print("  ❌ 시세 조회 실패"); return
     print(f"  현재가: {price:,.6g} USDT")
-    if state.get("cf_halt"):        # 수익곡선 필터(coin_cf_pair_run.py)가 롱+숏을 정지시킨 상태 — 거래·점검 없이 대기(재가동은 컨트롤러가 판정)
+    if state.get("cf_halt"):        # 수익곡선 필터(coin_cf_run.py)가 이 봇을 정지시킨 상태 — 거래·점검 없이 대기(재가동은 컨트롤러가 판정)
         print("  ⏸ 수익곡선 필터 정지 중 — 거래하지 않음(남은 잔량은 그대로 보유)"); return
     if CFG.get("opp_state"):        # 추세 보유 모드가 반대쪽 봇의 사다리 단계를 본다 (읽기 전용)
         try: CFG["opp_bs"] = int(json.load(open(CFG["opp_state"], encoding="utf-8")).get("bs", 0))
