@@ -215,6 +215,73 @@ def fmt_report(res, hours):
     return "\n".join(L)
 
 
+def cf_events(sym, var):
+    """필터 컨트롤러의 정지·재가동 이벤트 {side: [(ts, kind, curve)]} (A=실전, E=모의)."""
+    f = os.path.join(HERE, f"coin_cf_curve_{sym}{'_e' if var == 'E' else ''}.json")
+    try: d = json.load(open(f, encoding="utf-8"))
+    except Exception: return {sd: [] for sd in SIDES}
+    return {sd: [(float(t), k, c) for t, k, c in (d.get(sd, {}).get("events") or [])] for sd in SIDES}
+
+
+def _stat(ser, cap):
+    pk = mdd = 0.0
+    for x in ser: pk = max(pk, x); mdd = max(mdd, pk - x)
+    return (ser[-1] / cap * 100 if ser else 0.0), (mdd / cap * 100)
+
+
+def stop_section(hours=None, inject=None):
+    """필터 정지 구간 표시와 '재가동 이후 구간만' 비교. 시작 때 정지 중이던 봇은 정지 동안 A·E가 같으므로 따로 보여 준다.
+    inject: 시험용 {(sym,var,sd): restart_ts} (없으면 컨트롤러 이벤트 사용)."""
+    st = json.load(open(START, encoding="utf-8")); t0s = st["start"]; halted0 = st.get("halted_at_start") or []
+    L = []
+    for sym in SYMS:
+        ev = {var: cf_events(sym, var) for var in ("A", "E")}
+        hs = [h for h in halted0 if h.startswith(sym + " ")]
+        stops = {}
+        for sd in SIDES:
+            for var in ("A", "E"):
+                e = ev[var][sd]; stops[(var, sd)] = ([x for x in e if x[1] == "정지"][-1:] or [None])[0]
+        if not hs and not any(x[0] > t0s for e in ev.values() for v in e.values() for x in v): continue
+        L.append(f"[{sym.upper()} 필터 정지·재가동] " + (f"시작 때 정지 중이던 봇: {', '.join(hs)} — 정지 동안은 A·E가 같아 수익률 차이 0이 정상(E안 효과가 없다는 뜻이 아님)" if hs else "시작 때 정지 중이던 봇 없음"))
+        rows = [r for r in load_rows(sym) if r["t"] >= t0s - 5 and (not hours or r["t"] <= t0s + hours * 3600 + 30)]
+        cap = capital(sym); post = {}
+        for sd, kn in (("long", "롱"), ("short", "숏")):
+            parts = []
+            for var in ("A", "E"):
+                e = ev[var][sd]; last_stop = stops[(var, sd)]
+                rst = [x for x in e if x[1] == "재가동" and last_stop and x[0] > last_stop[0]]
+                if inject and (sym, var, sd) in inject: rst = [(inject[(sym, var, sd)], "재가동", 0)]
+                ts = f"정지 {kst_utc(dt.datetime.utcfromtimestamp(last_stop[0]))}" if last_stop else "정지 기록 없음"
+                rs = f"재가동 {kst_utc(dt.datetime.utcfromtimestamp(rst[-1][0]))}" if rst else "재가동 전(아직 정지 중)" if (last_stop and (var, sd) not in post) else "재가동 전"
+                if not last_stop and not rst: rs = "정지 없음(가동 중)"
+                parts.append(f"{var}: {ts} → {rs}"); post[(var, sd)] = rst[-1][0] if rst else None
+            L.append(f"  {kn}: " + " | ".join(parts))
+        # 재가동 이후 구간만 — A·E 둘 다 재가동한 뒤(둘 중 늦은 시각)부터
+        def series(t_from, var, sdl):
+            rr = [r for r in rows if r["t"] >= t_from]
+            if len(rr) < 2: return None
+            b0 = {sd: equity(rr[0][var][sd], rr[0]["p"], sd == "long") for sd in sdl}
+            return [sum(equity(r[var][sd], r["p"], sd == "long") - b0[sd] for sd in sdl) for r in rr], rr
+        res_lines = []
+        for sd, kn in (("long", "롱"), ("short", "숏")):
+            if post[("A", sd)] is None or post[("E", sd)] is None:
+                if any(x is not None for x in (post[("A", sd)], post[("E", sd)])) or sd in [h.split()[1] for h in hs]:
+                    res_lines.append(f"  {kn}: 재가동 이후 구간 없음(A·E 중 아직 재가동 전)"); continue
+                continue
+            tf = max(post[("A", sd)], post[("E", sd)]); a = series(tf, "A", (sd,)); e = series(tf, "E", (sd,))
+            if not a or not e: res_lines.append(f"  {kn}: 재가동 직후라 데이터 부족"); continue
+            ra, ma = _stat(a[0], cap); re_, me = _stat(e[0], cap)
+            res_lines.append(f"  {kn}: {kst_utc(dt.datetime.utcfromtimestamp(tf))}부터 {(a[1][-1]['t'] - a[1][0]['t']) / 3600:.1f}시간 — A {ra:+.1f}% / {ma:.1f}%  vs  E {re_:+.1f}% / {me:.1f}%")
+        if all(post[(v, sd)] is not None for v in ("A", "E") for sd in SIDES):
+            tf = max(post.values()); a = series(tf, "A", SIDES); e = series(tf, "E", SIDES)
+            if a and e:
+                ra, ma = _stat(a[0], cap * 2); re_, me = _stat(e[0], cap * 2)
+                res_lines.append(f"  합계: {kst_utc(dt.datetime.utcfromtimestamp(tf))}부터 {(a[1][-1]['t'] - a[1][0]['t']) / 3600:.1f}시간 — A {ra:+.1f}% / {ma:.1f}%  vs  E {re_:+.1f}% / {me:.1f}%")
+        L.append("  재가동 이후 구간만 비교 (수익률 / MDD, 기준 자본 대비 %):" if res_lines else "  재가동 이후 구간: 아직 없음 — 재가동 전에는 A·E 차이가 0이어도 E안 효과가 없다는 뜻이 아님")
+        L += res_lines
+    return "\n".join(L)
+
+
 def verdict():
     """24시간 판정 — 사용자 지정 실전 반영 권고 기준. 반환: (권고 bool, 이유 문자열). 6·12·24시간 세 시점 데이터가 모두 있어야 한다."""
     R = {h: compute(h) for h in (6, 12, 24)}
@@ -257,6 +324,8 @@ def main():
     else:
         h = int(sys.argv[sys.argv.index("--hours") + 1]) if "--hours" in sys.argv else None
         res = compute(h); print(fmt_report(res, h or "누적"))
+        sec = stop_section(h)
+        if sec: print("\n" + sec)
 
 
 if __name__ == "__main__":
