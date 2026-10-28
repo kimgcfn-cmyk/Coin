@@ -51,22 +51,22 @@ def lock_all(paths):
 def init():
     if os.path.exists(START) and "--force" not in sys.argv:
         print("이미 시작됨:", open(START).read()); return
-    for sym in SYMS:                                    # 정지(필터) 중인 봇이 있으면 복사하지 않는다 — 모의 쪽 필터 상태와 어긋남
-        for sd in SIDES:
-            st = json.load(open(sfile(sym, sd, "A"), encoding="utf-8"))
-            if st.get("cf_halt"): print(f"❌ {sym} {sd} 가 필터 정지 중 — 재가동 뒤에 다시 시작하세요"); return
-    locks = lock_all([f"/tmp/coin_hd_{sym}_{sd}.lock" for sym in SYMS for sd in SIDES])
-    now = time.time(); stamp = time.strftime("%m%d%H%M")
+    paths = [f"/tmp/coin_hd_{sym}_{sd}.lock" for sym in SYMS for sd in SIDES] + [f"/tmp/coin_cf_run_{sym}.lock" for sym in SYMS]
+    locks = lock_all(paths)                              # 봇·필터 컨트롤러가 장부를 만지는 동안은 복사하지 않도록 모두 잠근다
+    now = time.time(); stamp = time.strftime("%m%d%H%M"); halted = []
     for sym in SYMS:
         for sd in SIDES:
             a = sfile(sym, sd, "A"); e = sfile(sym, sd, "E")
             if os.path.exists(e): shutil.copy(e, e + ".bak_" + stamp)
             st = json.load(open(a, encoding="utf-8")); json.dump(st, open(e, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-        for suf in ("",):
-            pass
+            if st.get("cf_halt"): halted.append(f"{sym} {sd}")
+        ca = os.path.join(HERE, f"coin_cf_curve_{sym}.json"); ce = os.path.join(HERE, f"coin_cf_curve_{sym}_e.json")   # 필터 판정 상태(그림자 포함)도 같이 복사 → 같은 출발점
+        if os.path.exists(ca):
+            if os.path.exists(ce): shutil.copy(ce, ce + ".bak_" + stamp)
+            shutil.copy(ca, ce)
     json.dump(dict(start=now, start_utc=dt.datetime.utcfromtimestamp(now).strftime("%Y-%m-%d %H:%M"), note="E안(derisk_underwater_pct 5, derisk_pct 2) vs 실전 A",
-                   reported={"6": False, "12": False, "24": False}), open(START, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
-    print("초기화 완료 — 실전 장부를 모의 장부로 복사, 시작", dt.datetime.utcfromtimestamp(now).strftime("%Y-%m-%d %H:%M UTC"))
+                   halted_at_start=halted, reported={"6": False, "12": False, "24": False}), open(START, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    print("초기화 완료 — 실전 장부·필터 상태를 모의로 복사(필터 정지 중이던 봇: " + (", ".join(halted) or "없음") + "), 시작", dt.datetime.utcfromtimestamp(now).strftime("%Y-%m-%d %H:%M UTC"))
 
 
 def snap():
