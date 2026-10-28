@@ -8,6 +8,7 @@ A = 실전 CAP·Q 롱/숏 봇(hd_<종목>_<방향>), E = 같은 규칙에서 노
   python coin_derisk_ab.py snap            # (cron 1분) 시세와 A·E 장부를 derisk_ab_<종목>.jsonl 에 한 줄씩 기록
   python coin_derisk_ab.py report [--hours 6|12|24]   # 시작부터 N시간(또는 지금까지) 누적 기준 A vs E 비교표
   python coin_derisk_ab.py json            # 비교 결과와 분 단위 곡선을 JSON 으로 출력(맥 엑셀 생성용)
+  python coin_derisk_ab.py mark 6|12|24    # 해당 시점 보고를 마쳤다고 기록 / verdict : 24시간 판정(실전 반영 권고 예·아니오)
 정의: 곡선 = 누적 순손익 + 평가손익(반대 슬리피지 0.3%·청산 수수료 반영, A·E 같은 식), 시작 시점을 0으로 한 값. 모두 기준 자본(봇당 한도÷5 = 100 USDT, 종목 합 200) 대비 %.
       MDD = 곡선의 고점 대비 최대 하락폭. 평균 보유시간 = 체결 물량 FIFO(시작 때 보유분은 시작 시각부터).
 주의: 과거 결과일 뿐 투자 조언이 아니다.
@@ -214,18 +215,38 @@ def fmt_report(res, hours):
     return "\n".join(L)
 
 
-def verdict(res):
-    """24시간 판정 — 실전 반영 권고 기준(사용자 지정). 반환: (권고 bool, 이유 문자열)."""
-    reasons = []; ok = True
+def verdict():
+    """24시간 판정 — 사용자 지정 실전 반영 권고 기준. 반환: (권고 bool, 이유 문자열). 6·12·24시간 세 시점 데이터가 모두 있어야 한다."""
+    R = {h: compute(h) for h in (6, 12, 24)}
+    ok = True; why = []
     for sym in SYMS:
-        if sym not in res["symbols"]: return False, f"{sym.upper()} 데이터 부족"
-    return ok, "24시간 시점에서 기준 확인 필요"
+        wins = 0; mdd_ok = True; ret24 = None
+        for h in (6, 12, 24):
+            d = R[h]["symbols"].get(sym)
+            if not d or d["elapsed_h"] < h - 0.2: return False, f"{sym.upper()} {h}시간 시점 데이터 부족(경과 {d['elapsed_h']:.1f}h)" if d else f"{sym.upper()} 데이터 없음"
+            a = d["var"]["A"]["합계"]; e = d["var"]["E"]["합계"]
+            if e["ret"] >= a["ret"]: wins += 1
+            if not (e["mdd"] <= 30 or e["mdd"] <= a["mdd"]): mdd_ok = False
+            if h == 24: ret24 = (e["ret"], a["ret"])
+        c1 = wins >= 2 and ret24[0] >= ret24[1]
+        if not c1: ok = False; why.append(f"{sym.upper()} 수익률 조건 미달(E≥A {wins}/3, 24h E {ret24[0]:+.1f}% vs A {ret24[1]:+.1f}%)")
+        if not mdd_ok: ok = False; why.append(f"{sym.upper()} MDD 조건 미달")
+        rb = R[24]["symbols"][sym]["rebuy"]; nE = sum(len(v) for k, v in rb.items() if k.startswith("E_")); nA = sum(len(v) for k, v in rb.items() if k.startswith("A_"))
+        if nE > nA + 1: ok = False; why.append(f"{sym.upper()} 노출 축소 손실 후 같은 가격대 재매수 반복(E {nE}건 vs A {nA}건)")
+    return ok, ("모든 조건 충족" if ok else "; ".join(why))
+
+
+def mark(h):
+    st = json.load(open(START, encoding="utf-8")); st.setdefault("reported", {})[str(h)] = True
+    json.dump(st, open(START, "w", encoding="utf-8"), ensure_ascii=False, indent=2); print("기록:", st["reported"])
 
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "report"
     if cmd == "init": init()
     elif cmd == "snap": snap()
+    elif cmd == "mark": mark(int(sys.argv[2]))
+    elif cmd == "verdict": ok, why = verdict(); print("실전 반영 권고: " + ("예" if ok else "아니오") + " — " + why)
     elif cmd == "json":
         res = compute(); out = {"start": res["start"], "start_str": res["start_str"], "symbols": {}}
         for sym, d in res["symbols"].items():
