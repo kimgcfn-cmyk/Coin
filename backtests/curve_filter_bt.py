@@ -46,7 +46,7 @@ def cut_to_keep(st, L, p):
     return aq
 
 
-def run(sym_key, px, seed, D=None, U=None, win_note="", cut=True, min_stop=0, opp_mode="shadow"):
+def run(sym_key, px, seed, D=None, U=None, win_note="", cut=True, min_stop=0, opp_mode="shadow", confirm=0, confirm_restart=None):
     """sym_key: 'cap'|'q'|'tag'. D=None이면 필터 없음. 반환: 합계 손익·MDD·정지 횟수 등."""
     g.CFG.update(paper=True, paper_slip=SLIP, leverage=1)
     cfgs = {"long": dict(preset(f"hd_{sym_key}_long"), paper=True, paper_slip=SLIP, symbol="X/USDT:USDT", opp_state="", side="long"),
@@ -75,26 +75,40 @@ def run(sym_key, px, seed, D=None, U=None, win_note="", cut=True, min_stop=0, op
                 call(o["shadow"], sd, p, now, opp_bs); o["stop_min"] += 1
             er = o["real"].get("cum_pnl", 0.0) + un(o["real"], L, p)
             if D is not None:
+                cr = confirm if confirm_restart is None else confirm_restart
                 if o["mode"] == "RUN":
                     o["peak"] = max(o["peak"], er)
-                    if o["peak"] - er >= D:                       # ① 수익곡선 하락 → 정지 + 잔량 손절
+                    hit = o["peak"] - er >= D
+                    if confirm and hit:                            # 확인 대기: 처음 조건을 만족한 뒤 confirm분 뒤에도 만족해야 실행
+                        if o.get("pend") is None: o["pend"] = i; hit = False
+                        elif i - o["pend"] < confirm: hit = False
+                    elif confirm and not hit and o.get("pend") is not None and i - o["pend"] >= confirm: o["pend"] = None
+                    if hit: o["pend"] = None
+                    if hit:                       # ① 수익곡선 하락 → 정지 + 잔량 손절
                         o["shadow"] = copy.deepcopy(o["real"]); o["since"] = i
                         if cut: cut_to_keep(o["real"], L, p)
-                        o["mode"] = "STOP"; o["stops"] += 1
+                        o["mode"] = "STOP"; o["stops"] += 1; o.setdefault("ev", []).append((i, "정지"))
                         es = o["shadow"].get("cum_pnl", 0.0) + un(o["shadow"], L, p); o["trough"] = es
                 else:
                     sh = o["shadow"]; es = sh.get("cum_pnl", 0.0) + un(sh, L, p)
                     o["trough"] = min(o["trough"], es)
-                    if es - o["trough"] >= U and i - o["since"] >= min_stop:                       # ③ 그림자 곡선 상승 → 실거래 재가동
+                    rhit = es - o["trough"] >= U and i - o["since"] >= min_stop
+                    if cr and rhit:
+                        if o.get("rpend") is None: o["rpend"] = i; rhit = False
+                        elif i - o["rpend"] < cr: rhit = False
+                    elif cr and not rhit and o.get("rpend") is not None and i - o["rpend"] >= cr: o["rpend"] = None
+                    if rhit: o["rpend"] = None
+                    if rhit:                       # ③ 그림자 곡선 상승 → 실거래 재가동
                         r = o["real"]; r["ref_hist"] = copy.deepcopy(sh["ref_hist"]); r.update(bs=0, ss=0, full=False, stopped=0, started=True)
-                        r.pop("trend", None); r.pop("t_peak", None)
-                        o["mode"] = "RUN"; o["restarts"] += 1
+                        r.pop("trend", None); r.pop("t_peak", None); r.pop("rest_until", None)      # 실전 엔진과 같게: 재가동 때 손절 후 휴식도 해제
+                        o["mode"] = "RUN"; o["restarts"] += 1; o.setdefault("ev", []).append((i, "재가동"))
                         o["peak"] = o["real"].get("cum_pnl", 0.0) + un(o["real"], L, p)
         eq = sum(S[sd]["real"].get("cum_pnl", 0.0) + un(S[sd]["real"], sd == "long", p) for sd in ("long", "short"))
         peak = max(peak, eq); mdd = max(mdd, peak - eq); curve.append(eq)
     return dict(tot=eq, mdd=mdd, stops=sum(S[sd]["stops"] for sd in S), restarts=sum(S[sd]["restarts"] for sd in S),
                 stop_pct=100.0 * sum(S[sd]["stop_min"] for sd in S) / (2 * len(px)),
-                long=S["long"]["real"].get("cum_pnl", 0.0) + un(S["long"]["real"], True, px[-1]), short=S["short"]["real"].get("cum_pnl", 0.0) + un(S["short"]["real"], False, px[-1]))
+                long=S["long"]["real"].get("cum_pnl", 0.0) + un(S["long"]["real"], True, px[-1]), short=S["short"]["real"].get("cum_pnl", 0.0) + un(S["short"]["real"], False, px[-1]),
+                ev={sd: S[sd].get("ev", []) for sd in S})
 
 
 SYM = {"cap": "CAPUSDT", "q": "QUSDT", "tag": "TAGUSDT"}

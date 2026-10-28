@@ -4,7 +4,7 @@
 사용:  python3 coin_cf_run.py --sym tag [--live] [--check] [--status] [--reset] [--mode side|pair]     (cron 1분, 롱·숏 봇 점검 뒤에 실행)
 동작:  종목(tag) 롱·숏 봇의 장부(coin_avg_hd_<sym>_{long,short}_state.json)를 읽어 봇마다 따로 수익곡선을 판정한다(기본 --mode side).
        · 그 봇의 곡선이 고점 대비 기준 자본(한도÷5)의 5% 하락 → 그 봇만 정지(장부 cf_halt) + 보유량 100 USDT만 남기고 시장가 reduce-only 정리(--live일 때만 실주문)
-       · 정지 중에는 그 봇의 그림자(모의)가 같은 전략을 돌고, 그림자 곡선이 저점 +8% 오르면 그 봇만 바로 재가동(최소 정지 시간 없음)
+       · 정지 중에는 그 봇의 그림자(모의)가 같은 전략을 돌고, 그림자 곡선이 저점 +8% 오르고 최소 60분이 지나면 그 봇만 재가동. 정지·재가동 모두 1분 뒤 다시 확인해 같을 때만 실행
        (--mode pair 는 롱+숏 합산 곡선으로 둘을 같이 판정하는 방식 — 참고용)
        두 봇의 flock 잠금(/tmp/coin_hd_<sym>_{long,short}.lock)을 잡은 채로 장부를 수정하므로 봇 프로세스와 겹치지 않는다.
        --check: 판정만 하고 주문·저장 없음. --status: 컨트롤러 상태 출력. --reset: 컨트롤러 상태 초기화(봇 장부는 그대로, cf_halt도 해제).
@@ -17,7 +17,7 @@ import coin_grid_bot as g
 from coin_cf_filter import make_filters
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DROP_PCT, RISE_PCT, MIN_STOP_MIN, KEEP = 5.0, 8.0, 0, 100.0      # 10/28 사용자 지시: 최소 정지 시간 없음(그림자 곡선이 저점 +8%면 바로 재가동)
+DROP_PCT, RISE_PCT, MIN_STOP_MIN, KEEP, CONFIRM_MIN = 5.0, 8.0, 60, 100.0, 1      # 10/28 11시 사용자 지시: 1분 확인 + 최소 정지 60분
 
 
 def preset(name):
@@ -74,7 +74,7 @@ def main():
         b.CFG.clear(); b.CFG.update(live_cfg[sd])
     order_fn = lambda side, usdt, p, ro, qty: g.place_order(b.CFG["symbol"], side, usdt, p, reduce_only=ro, dry_run=not send, qty_override=qty)
     notify = (lambda m: g.send_discord(m + b.balance_line())) if send else None
-    fl = make_filters(shadow_cfg, S, order_fn, mode=mode, drop_pct=DROP_PCT, rise_pct=RISE_PCT, min_stop_min=MIN_STOP_MIN, keep=KEEP, external=True,
+    fl = make_filters(shadow_cfg, S, order_fn, mode=mode, drop_pct=DROP_PCT, rise_pct=RISE_PCT, min_stop_min=MIN_STOP_MIN, keep=KEEP, confirm_min=CONFIRM_MIN, external=True,
                       prepare=prepare, notify=notify, log=print, name=sym.upper())
     saved = json.load(open(cfile, encoding="utf-8")) if os.path.exists(cfile) else {}
     keys = [("pair" if len(f.sides) == 2 else f.sides[0]) for f in fl]
