@@ -198,7 +198,7 @@ def fmt_report(res, hours):
             a = d["var"]["A"][k]; e = d["var"]["E"][k]
             if k == "합계": dn = (sum(d["var"]["A"]["ev"][s]["derisk_n"] for s in SIDES), sum(d["var"]["E"]["ev"][s]["derisk_n"] for s in SIDES))
             else: dn = (d["var"]["A"]["ev"][k]["derisk_n"], d["var"]["E"]["ev"][k]["derisk_n"])
-            L.append(f"| {sym.upper()} | {kn} | {hours}h({d['elapsed_h']:.1f}h) | {a['ret']:+.1f}% / {a['mdd']:.1f}% ({a['usdt']:+.1f}) | {e['ret']:+.1f}% / {e['mdd']:.1f}% ({e['usdt']:+.1f}) | {dn[0]} → {dn[1]} |")
+            L.append(f"| {sym.upper()} | {kn} | {(str(hours) + 'h') if hours else '누적'}(경과 {d['elapsed_h']:.1f}h) | {a['ret']:+.1f}% / {a['mdd']:.1f}% ({a['usdt']:+.1f}) | {e['ret']:+.1f}% / {e['mdd']:.1f}% ({e['usdt']:+.1f}) | {dn[0]} → {dn[1]} |")
         if d["var"]["E"]["합계"]["mdd"] > 30 and d["var"]["E"]["합계"]["mdd"] > d["var"]["A"]["합계"]["mdd"]:
             flags.append(f"⚠️ {sym.upper()}: E안 합계 MDD {d['var']['E']['합계']['mdd']:.1f}% > 30% 이고 현재안({d['var']['A']['합계']['mdd']:.1f}%)보다 큼 → 실전 반영 후보에서 제외 표시")
     L.append("")
