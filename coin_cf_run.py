@@ -44,25 +44,27 @@ def lock(path, wait=30):
 def main():
     args = sys.argv[1:]
     sym = args[args.index("--sym") + 1] if "--sym" in args else "tag"
-    send = "--live" in args and "--check" not in args
-    cfile = os.path.join(HERE, f"coin_cf_curve_{sym}.json"); mode = args[args.index("--mode") + 1] if "--mode" in args else "side"
-    files = {sd: os.path.join(HERE, f"coin_avg_hd_{sym}_{sd}_state.json") for sd in ("long", "short")}
+    suf = args[args.index("--suffix") + 1] if "--suffix" in args else ""         # 모의 복사본(예: _e) — 프리셋 hd_<종목>_<방향><suf>, 장부·잠금·판정 상태도 접미사로 분리
+    paper = "--paper" in args                                                   # 모의: 주문은 모의 체결(거래소 호출·디스코드 없음), 장부·판정 상태는 저장
+    send = ("--live" in args or paper) and "--check" not in args
+    cfile = os.path.join(HERE, f"coin_cf_curve_{sym}{suf}.json"); mode = args[args.index("--mode") + 1] if "--mode" in args else "side"
+    files = {sd: os.path.join(HERE, f"coin_avg_hd_{sym}_{sd}{suf}_state.json") for sd in ("long", "short")}
     if "--status" in args:
         d = json.load(open(cfile)) if os.path.exists(cfile) else {}
         print(json.dumps({n: {k: v for k, v in x.items() if k not in ("SH", "hist")} for n, x in d.items()}, ensure_ascii=False, indent=1)); return
     if "--reset" in args:
-        locks = [lock(f"/tmp/coin_hd_{sym}_{sd}.lock") for sd in ("long", "short")]
+        locks = [lock(f"/tmp/coin_hd_{sym}_{sd}{suf}.lock") for sd in ("long", "short")]
         for sd in files:
             if os.path.exists(files[sd]):
                 st = json.load(open(files[sd], encoding="utf-8")); st["cf_halt"] = False; st["wt_mult"] = 1.0; atomic_write(files[sd], st)
         if os.path.exists(cfile): os.remove(cfile)
         print("  ✅ 컨트롤러 상태 초기화 (봇 장부·실제 포지션은 그대로, 정지 플래그 해제)"); return
     now = time.time()
-    print(f"\n{'=' * 56}\n  수익곡선 필터 컨트롤러 — {sym.upper()} 롱·숏 각각 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}{'' if send else ' [판정만]'}\n{'=' * 56}")
-    locks = [lock(f"/tmp/coin_hd_{sym}_{sd}.lock") for sd in ("long", "short")]       # 두 봇 장부를 만지는 동안 봇 프로세스를 막는다
-    pres = {sd: preset(f"hd_{sym}_{sd}") for sd in ("long", "short")}
+    print(f"\n{'=' * 56}\n  수익곡선 필터 컨트롤러 — {sym.upper()}{suf} 롱·숏 각각 — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}{' [모의]' if paper else '' if send else ' [판정만]'}\n{'=' * 56}")
+    locks = [lock(f"/tmp/coin_hd_{sym}_{sd}{suf}.lock") for sd in ("long", "short")]       # 두 봇 장부를 만지는 동안 봇 프로세스를 막는다
+    pres = {sd: preset(f"hd_{sym}_{sd}{suf}") for sd in ("long", "short")}
     symbol = g._normalize_symbol(pres["long"]["symbol"].split("/")[0]) if pres["long"].get("symbol") else None
-    live_cfg = {sd: dict(pres[sd]["cfg"], symbol=pres[sd].get("symbol") or symbol, side=sd, auto_trade=True, paper=False, state_file=files[sd]) for sd in pres}
+    live_cfg = {sd: dict(pres[sd]["cfg"], symbol=pres[sd].get("symbol") or symbol, side=sd, auto_trade=not paper, paper=paper, state_file=files[sd]) for sd in pres}
     shadow_cfg = {sd: dict(pres[sd]["cfg"], symbol=live_cfg[sd]["symbol"], side=sd, opp_state="") for sd in pres}
     S = {}
     for sd in files:
@@ -75,9 +77,9 @@ def main():
     def prepare(sd):                        # 실주문 직전: 해당 봇의 실전 CFG를 적용
         b.CFG.clear(); b.CFG.update(live_cfg[sd])
     order_fn = lambda side, usdt, p, ro, qty: g.place_order(b.CFG["symbol"], side, usdt, p, reduce_only=ro, dry_run=not send, qty_override=qty)
-    notify = (lambda m: g.send_discord(m + b.balance_line())) if send else None
+    notify = (lambda m: g.send_discord(m + b.balance_line())) if (send and not paper) else None
     fl = make_filters(shadow_cfg, S, order_fn, mode=mode, drop_pct=DROP_PCT, rise_pct=RISE_PCT, min_stop_min=MIN_STOP_MIN, keep=KEEP, confirm_min=CONFIRM_MIN, external=True,
-                      prepare=prepare, notify=notify, log=print, name=sym.upper())
+                      prepare=prepare, notify=notify, log=print, name=sym.upper() + suf)
     saved = json.load(open(cfile, encoding="utf-8")) if os.path.exists(cfile) else {}
     keys = [("pair" if len(f.sides) == 2 else f.sides[0]) for f in fl]
     for k_, f in zip(keys, fl):
@@ -85,7 +87,7 @@ def main():
     before = json.dumps(S, sort_keys=True)
     for f in fl: f.step(price, now)
     capw = float(live_cfg["long"]["max_total_usdt"]) / 5.0                     # 봇 기준 자본(한도÷5) — 비중 조절 판정은 이 값 대비 %
-    wt = weight_update(saved.get("wt") or {}, S, any(f.mode == "STOP" for f in fl), price, now, capw, notify=notify, log=print, name=sym.upper())
+    wt = weight_update(saved.get("wt") or {}, S, any(f.mode == "STOP" for f in fl), price, now, capw, notify=notify, log=print, name=sym.upper() + suf)
     if send:
         if json.dumps(S, sort_keys=True) != before:
             for sd in files: atomic_write(files[sd], S[sd])
