@@ -46,7 +46,7 @@ def cut_to_keep(st, L, p):
     return aq
 
 
-def run(sym_key, px, seed, D=None, U=None, win_note="", cut=True, min_stop=0, opp_mode="shadow", confirm=0, confirm_restart=None):
+def run(sym_key, px, seed, D=None, U=None, win_note="", cut=True, min_stop=0, opp_mode="shadow", confirm=0, confirm_restart=None, wt=None):
     """sym_key: 'cap'|'q'|'tag'. D=None이면 필터 없음. 반환: 합계 손익·MDD·정지 횟수 등."""
     g.CFG.update(paper=True, paper_slip=SLIP, leverage=1)
     cfgs = {"long": dict(preset(f"hd_{sym_key}_long"), paper=True, paper_slip=SLIP, symbol="X/USDT:USDT", opp_state="", side="long"),
@@ -64,8 +64,27 @@ def run(sym_key, px, seed, D=None, U=None, win_note="", cut=True, min_stop=0, op
         if o["mode"] == "RUN": return o["real"].get("bs", 0)
         return {"shadow": o["shadow"], "real": o["real"]}.get(opp_mode, {}).get("bs", 0)      # shadow: 원래 전략의 단계 / real: 정지된 실봇 단계 / zero: 0
 
+    # 비중 조절(2026-10-28 제안): 최근 win분 롱·숏 곡선 변화 차이가 기준 자본의 trig% 이상이면 이기는 쪽 단계 크기 win_m배·지는 쪽 lose_m배,
+    # 차이가 back% 이하로 줄면 같은 비중으로 복귀. 한 번 바꾸면 hold분 유지. 한쪽이 필터로 정지 중이면 같은 비중(조절 쉼).
+    base_sz = {sd: (float(cfgs[sd]["ladder_usdt"]), float(cfgs[sd].get("reinvest_usdt") or 0)) for sd in cfgs}
+    capw = float(cfgs["long"]["max_total_usdt"]) / 5.0
+    eqh = {"long": [], "short": []}; wstate = None; wlast = -10**9; wswitch = 0; wmin = {"long": 0, "short": 0}
     for i, p in enumerate(px):
         now = 1_000_000 + i * 60
+        if wt:
+            want = wstate
+            if any(S[sd]["mode"] == "STOP" for sd in S): want = None
+            elif len(eqh["long"]) >= 2:
+                j0 = max(0, len(eqh["long"]) - 1 - int(wt.get("win", 360)))
+                dl = eqh["long"][-1] - eqh["long"][j0]; ds = eqh["short"][-1] - eqh["short"][j0]; diff = (ds - dl) / capw * 100
+                if abs(diff) >= wt.get("trig", 10.0): want = "short" if diff > 0 else "long"
+                elif abs(diff) <= wt.get("back", 5.0): want = None
+            if want != wstate and (i - wlast >= wt.get("hold", 60) or any(S[sd]["mode"] == "STOP" for sd in S)):
+                wstate = want; wlast = i; wswitch += 1
+            for sd in ("long", "short"):
+                m = 1.0 if wstate is None else (wt.get("win_m", 1.5) if sd == wstate else wt.get("lose_m", 0.5))
+                cfgs[sd]["ladder_usdt"] = base_sz[sd][0] * m; cfgs[sd]["reinvest_usdt"] = base_sz[sd][1] * m
+                if wstate is not None: wmin[sd] += 1
         for sd in ("long", "short"):
             L = sd == "long"; o = S[sd]; opp = "short" if L else "long"
             opp_bs = strat_state(opp)
@@ -103,12 +122,13 @@ def run(sym_key, px, seed, D=None, U=None, win_note="", cut=True, min_stop=0, op
                         r.pop("trend", None); r.pop("t_peak", None); r.pop("rest_until", None)      # 실전 엔진과 같게: 재가동 때 손절 후 휴식도 해제
                         o["mode"] = "RUN"; o["restarts"] += 1; o.setdefault("ev", []).append((i, "재가동"))
                         o["peak"] = o["real"].get("cum_pnl", 0.0) + un(o["real"], L, p)
+        for sd in ("long", "short"): eqh[sd].append(S[sd]["real"].get("cum_pnl", 0.0) + un(S[sd]["real"], sd == "long", p))
         eq = sum(S[sd]["real"].get("cum_pnl", 0.0) + un(S[sd]["real"], sd == "long", p) for sd in ("long", "short"))
         peak = max(peak, eq); mdd = max(mdd, peak - eq); curve.append(eq)
     return dict(tot=eq, mdd=mdd, stops=sum(S[sd]["stops"] for sd in S), restarts=sum(S[sd]["restarts"] for sd in S),
                 stop_pct=100.0 * sum(S[sd]["stop_min"] for sd in S) / (2 * len(px)),
                 long=S["long"]["real"].get("cum_pnl", 0.0) + un(S["long"]["real"], True, px[-1]), short=S["short"]["real"].get("cum_pnl", 0.0) + un(S["short"]["real"], False, px[-1]),
-                ev={sd: S[sd].get("ev", []) for sd in S})
+                ev={sd: S[sd].get("ev", []) for sd in S}, wswitch=wswitch, wpct=100.0 * wmin["long"] / max(1, len(px)))
 
 
 SYM = {"cap": "CAPUSDT", "q": "QUSDT", "tag": "TAGUSDT"}

@@ -356,6 +356,10 @@ def run_check(send=True):
     print(f"  현재가: {price:,.6g} USDT")
     if state.get("cf_halt"):        # 수익곡선 필터(coin_cf_run.py)가 이 봇을 정지시킨 상태 — 거래·점검 없이 대기(재가동은 컨트롤러가 판정)
         print("  ⏸ 수익곡선 필터 정지 중 — 거래하지 않음(남은 잔량은 그대로 보유)"); return
+    wm = float(state.get("wt_mult") or 1.0)          # 비중 조절(coin_cf_run.py가 장부에 기록): 진입·청산 사다리와 재투입 크기에 곱한다(2026-10-28)
+    if abs(wm - 1.0) > 1e-9:
+        for k_ in ("ladder_usdt", "reinvest_usdt"): CFG[k_] = float(CFG.get(k_) or 0) * wm
+        print(f"  ⚖️ 비중 조절 {wm * 100:.0f}% — 단계 크기 {float(CFG['ladder_usdt']):.0f}USDT")
     if CFG.get("opp_state"):        # 추세 보유 모드가 반대쪽 봇의 사다리 단계를 본다 (읽기 전용)
         try: CFG["opp_bs"] = int(json.load(open(CFG["opp_state"], encoding="utf-8")).get("bs", 0))
         except Exception: CFG["opp_bs"] = 0

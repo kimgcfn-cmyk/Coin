@@ -9,12 +9,14 @@
        두 봇의 flock 잠금(/tmp/coin_hd_<sym>_{long,short}.lock)을 잡은 채로 장부를 수정하므로 봇 프로세스와 겹치지 않는다.
        --check: 판정만 하고 주문·저장 없음. --status: 컨트롤러 상태 출력. --reset: 컨트롤러 상태 초기화(봇 장부는 그대로, cf_halt도 해제).
 상태: coin_cf_curve_<sym>.json (필터별 판정 상태·그림자 장부·이벤트). 로그: logs/coin_cf_run_<sym>.log. 과거 결과일 뿐 투자 조언이 아니다.
+       비중 조절(10/28 12시대 사용자 지시, 모든 봇): 최근 6시간 롱·숏 곡선 변화 차이가 기준 자본의 30% 이상이면 이기는 쪽 단계 크기 150%·지는 쪽 50%,
+       15% 이하로 줄면 같은 비중으로 복귀(최소 60분 유지, 필터 정지 중엔 같은 비중). 결과는 장부 wt_mult로 봇에 전달(coin_cf_filter.weight_update).
 """
 import sys, os, json, time, fcntl
 from datetime import datetime, timezone
 import coin_avg_ladder_bot as b
 import coin_grid_bot as g
-from coin_cf_filter import make_filters
+from coin_cf_filter import make_filters, weight_update
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DROP_PCT, RISE_PCT, MIN_STOP_MIN, KEEP, CONFIRM_MIN = 30.0, 10.0, 60, 100.0, 1      # 10/28 12시 사용자 지시: 정지 −30%·재가동 +10%(기준 자본 대비), 1분 확인 + 최소 정지 60분
@@ -47,12 +49,12 @@ def main():
     files = {sd: os.path.join(HERE, f"coin_avg_hd_{sym}_{sd}_state.json") for sd in ("long", "short")}
     if "--status" in args:
         d = json.load(open(cfile)) if os.path.exists(cfile) else {}
-        print(json.dumps({n: {k: v for k, v in x.items() if k != "SH"} for n, x in d.items()}, ensure_ascii=False, indent=1)); return
+        print(json.dumps({n: {k: v for k, v in x.items() if k not in ("SH", "hist")} for n, x in d.items()}, ensure_ascii=False, indent=1)); return
     if "--reset" in args:
         locks = [lock(f"/tmp/coin_hd_{sym}_{sd}.lock") for sd in ("long", "short")]
         for sd in files:
             if os.path.exists(files[sd]):
-                st = json.load(open(files[sd], encoding="utf-8")); st["cf_halt"] = False; atomic_write(files[sd], st)
+                st = json.load(open(files[sd], encoding="utf-8")); st["cf_halt"] = False; st["wt_mult"] = 1.0; atomic_write(files[sd], st)
         if os.path.exists(cfile): os.remove(cfile)
         print("  ✅ 컨트롤러 상태 초기화 (봇 장부·실제 포지션은 그대로, 정지 플래그 해제)"); return
     now = time.time()
@@ -82,10 +84,12 @@ def main():
         if k_ in saved: f.load(saved[k_])
     before = json.dumps(S, sort_keys=True)
     for f in fl: f.step(price, now)
+    capw = float(live_cfg["long"]["max_total_usdt"]) / 5.0                     # 봇 기준 자본(한도÷5) — 비중 조절 판정은 이 값 대비 %
+    wt = weight_update(saved.get("wt") or {}, S, any(f.mode == "STOP" for f in fl), price, now, capw, notify=notify, log=print, name=sym.upper())
     if send:
         if json.dumps(S, sort_keys=True) != before:
             for sd in files: atomic_write(files[sd], S[sd])
-        atomic_write(cfile, {k_: f.dump() for k_, f in zip(keys, fl)})
+        atomic_write(cfile, dict({k_: f.dump() for k_, f in zip(keys, fl)}, wt=wt))
 
 if __name__ == "__main__":
     main()

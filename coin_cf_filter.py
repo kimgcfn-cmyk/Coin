@@ -119,3 +119,41 @@ def make_filters(cfgs, states, order_fn, mode="side", **kw):
     """mode 'side'(기본): 롱·숏 각각 한 개씩 / 'pair': 롱+숏 합산 한 개."""
     if mode == "pair": return [CurveFilter(cfgs, states, order_fn, sides=("long", "short"), **kw)]
     return [CurveFilter(cfgs, states, order_fn, sides=(sd,), **kw) for sd in ("long", "short")]
+
+
+# ── 비중 조절(2026-10-28 사용자 지시, 모든 봇) ──
+# 최근 win분 동안 롱·숏 곡선(누적 순손익+평가손익) 변화의 차이가 기준 자본(봇당 한도÷5)의 trig% 이상이면 이기는 쪽 단계 크기 win_m배, 지는 쪽 lose_m배.
+# 차이가 back% 이하로 줄면 같은 비중(1배)으로 복귀. 한 번 바꾸면 hold분 유지. 한쪽이 수익곡선 필터로 정지 중이면 같은 비중(조절 쉼, 바로 적용).
+# 단계 크기 = ladder_usdt(진입·청산 사다리)와 reinvest_usdt(재투입). 한도·최소 보유·노출 축소 크기는 그대로. 봇은 장부의 wt_mult를 읽어 적용한다.
+WT_DEF = dict(trig=30.0, back=15.0, hold=60, win_m=1.5, lose_m=0.5, win=360)
+
+
+def weight_update(wt, S, stopped, price, now, capw, prm=None, notify=None, log=None, name=""):
+    """wt: 저장 상태 dict(hist, state, last). S: {'long','short'} 실봇 장부. stopped: 한쪽이라도 필터 정지 중이면 True.
+    S[sd]['wt_mult']를 갱신하고 wt를 돌려준다. 백테스트(backtests/curve_filter_bt.run의 wt)와 같은 규칙."""
+    prm = dict(WT_DEF, **(prm or {})); log = log or (lambda *a: None)
+    hist = list(wt.get("hist") or []); state = wt.get("state"); last = wt.get("last", -1e18)
+    hist.append([now, b.cf_equity(S["long"], price, True), b.cf_equity(S["short"], price, False)])      # 이번 판정 시점까지의 곡선(백테스트와 같은 시점)
+    hist = [h for h in hist if h[0] >= now - prm["win"] * 60 - 120]
+    want = state; diff = None
+    if stopped: want = None
+    elif len(hist) >= 2:
+        h0 = next((h for h in hist if h[0] >= hist[-1][0] - prm["win"] * 60 - 30), hist[0])
+        diff = ((hist[-1][2] - h0[2]) - (hist[-1][1] - h0[1])) / capw * 100
+        if abs(diff) >= prm["trig"]: want = "short" if diff > 0 else "long"
+        elif abs(diff) <= prm["back"]: want = None
+    if want != state and (now - last >= prm["hold"] * 60 - 5 or stopped):
+        state = want; last = now; wt["switches"] = wt.get("switches", 0) + 1
+        msg = ("⚖️ <b>{} 비중 조절</b>\n".format(name) + ("같은 비중(롱 100% · 숏 100%)으로 복귀" if state is None else
+               f"{'숏' if state == 'short' else '롱'} {prm['win_m'] * 100:.0f}% · {'롱' if state == 'short' else '숏'} {prm['lose_m'] * 100:.0f}%")
+               + (f" — 최근 {prm['win'] / 60:g}시간 숏−롱 실적 차이 {diff:+.1f}%" if diff is not None else " — 필터 정지 중"))
+        log("  " + msg.replace("<b>", "").replace("</b>", "").replace("\n", " "))
+        if notify:
+            try: notify(msg)
+            except Exception: pass
+    for sd in ("long", "short"):
+        S[sd]["wt_mult"] = 1.0 if state is None else (prm["win_m"] if sd == state else prm["lose_m"])
+    log(f"  ⚖️ {name} 비중: " + ("같은 비중" if state is None else f"{'숏' if state == 'short' else '롱'} {prm['win_m'] * 100:.0f}% / 반대 {prm['lose_m'] * 100:.0f}%")
+        + (f" (최근 {prm['win'] / 60:g}시간 숏−롱 차이 {diff:+.1f}%, 발동 ±{prm['trig']:g}% · 복귀 {prm['back']:g}%)" if diff is not None else ""))
+    wt.update(hist=hist, state=state, last=last)
+    return wt
